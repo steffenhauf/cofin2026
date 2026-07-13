@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -29,40 +29,35 @@ BASE_PERSONAS = pd.DataFrame(
         {
             "persona": "innovators",
             "share": 0.025,
-            "adoption_prob": 0.93,
-            "task_fit": 1.18,
+            "adoption_mean": 0.93,
             "usage_intensity": 1.35,
             "wait_tolerance": 0.85,
         },
         {
             "persona": "early_adopters",
             "share": 0.135,
-            "adoption_prob": 0.82,
-            "task_fit": 1.10,
+            "adoption_mean": 0.82,
             "usage_intensity": 1.20,
             "wait_tolerance": 0.72,
         },
         {
             "persona": "early_majority",
             "share": 0.34,
-            "adoption_prob": 0.61,
-            "task_fit": 1.00,
+            "adoption_mean": 0.61,
             "usage_intensity": 1.00,
             "wait_tolerance": 0.55,
         },
         {
             "persona": "late_majority",
             "share": 0.34,
-            "adoption_prob": 0.38,
-            "task_fit": 0.87,
+            "adoption_mean": 0.38,
             "usage_intensity": 0.78,
             "wait_tolerance": 0.36,
         },
         {
             "persona": "laggards",
             "share": 0.16,
-            "adoption_prob": 0.17,
-            "task_fit": 0.68,
+            "adoption_mean": 0.17,
             "usage_intensity": 0.48,
             "wait_tolerance": 0.18,
         },
@@ -76,18 +71,28 @@ DEFAULT_EMPLOYEE_TYPES = pd.DataFrame(
             "share": 0.36,
             "mean_gain": 0.10,
             "sigma": 0.060,
+            "capability_fit": 0.85,
         },
         {
             "task": "administration",
             "share": 0.44,
             "mean_gain": 0.17,
             "sigma": 0.080,
+            "capability_fit": 1.00,
         },
         {
             "task": "manual_labor",
             "share": 0.20,
             "mean_gain": 0.020,
             "sigma": 0.020,
+            "capability_fit": 0.25,
+        },
+        {
+            "task": "knowledge_work",
+            "share": 0.0,
+            "mean_gain": 0.15,
+            "sigma": 0.090,
+            "capability_fit": 0.90,
         },
     ]
 )
@@ -99,10 +104,10 @@ ENGINEERING_CONTEXT_MULTIPLIERS = {
 }
 
 MODEL_SCENARIOS = {
-    "frontier_growth": {"kind": "frontier", "growth": True, "lag": 0},
-    "frontier_plateau": {"kind": "frontier", "growth": False, "lag": 0},
-    "oss_growth_lagged": {"kind": "oss", "growth": True, "lag": 3},
-    "oss_plateau_lagged": {"kind": "oss", "growth": False, "lag": 3},
+    "frontier_growth": {"kind": "frontier", "growth": True, "lag_months": 0},
+    "frontier_plateau": {"kind": "frontier", "growth": False, "lag_months": 0},
+    "oss_growth_lagged": {"kind": "oss", "growth": True, "lag_months": 12},
+    "oss_plateau_lagged": {"kind": "oss", "growth": False, "lag_months": 12},
 }
 
 TOKEN_SCENARIOS = {
@@ -132,6 +137,8 @@ ACCESS_PLANS = {
     },
 }
 
+LOCAL_FALLBACK_POLICIES = ("persona_choice", "local_default")
+
 HARDWARE_SCENARIOS = {
     "cloud_api_only": {"capacity": 0.0, "utilization": 1.0, "capex_units": 0.0},
     "onprem_10pct_capacity": {"capacity": 0.10, "utilization": 1.0, "capex_units": 165.0},
@@ -145,10 +152,39 @@ HARDWARE_REFRESH = {
     "follow_each_generation": {"refresh_factor": 1.45, "capability_bonus": 1.08},
 }
 
-RTX_6000_ADA_TARGET_USD = 8565.0 / 1.26
+H100_TARGET_USD = 30000.0
+RTX_6000_BLACKWELL_TARGET_USD = 8565.0
+HARDWARE_CALIBRATIONS = {
+    "h100": {
+        "target_unit_usd": H100_TARGET_USD,
+        "onprem_capability_multiplier": 1.0,
+        "onprem_model_label": "H100-class local model",
+    },
+    "rtx6000-blackwell-gemma-moe-26b": {
+        "target_unit_usd": RTX_6000_BLACKWELL_TARGET_USD,
+        "onprem_capability_multiplier": 0.94,
+        "onprem_model_label": "Gemma MoE 26B-class local model",
+    },
+    "b100": {
+        "target_unit_usd": 60000.0,
+        "onprem_capability_multiplier": 1.0,
+        "onprem_model_label": "B100-class local model",
+    },
+    "nvl72": {
+        "target_unit_usd": 3100000.0,
+        "onprem_capability_multiplier": 1.0,
+        "onprem_model_label": "GB200 NVL72-class local model",
+    },
+}
+HARDWARE_BENCHMARKS_PATH = Path(__file__).with_name("hardware_benchmarks.csv")
+_HARDWARE_BENCHMARKS: pd.DataFrame | None = None
 USD_PER_HARDWARE_CAPEX_INDEX_DEFAULT = (
-    RTX_6000_ADA_TARGET_USD / HARDWARE_SCENARIOS["onprem_10pct_capacity"]["capex_units"]
+    HARDWARE_CALIBRATIONS["h100"]["target_unit_usd"] / HARDWARE_SCENARIOS["onprem_10pct_capacity"]["capex_units"]
 )
+DEFAULT_CONCURRENCY = max(1, os.cpu_count() or 1)
+
+_NUMBA_MODULE = None
+_NUMBA_IMPORT_ATTEMPTED = False
 
 
 @dataclass(frozen=True)
@@ -157,7 +193,7 @@ class SimulationConfig:
     years: float = 3.0
     resolution_months: int = 3
     runs: int = 1000
-    concurrency: int = 1
+    concurrency: int = DEFAULT_CONCURRENCY
     seed: int = 20260703
     plateau_quarter: int = 5
     base_cost_index_per_active_user_quarter: float = 1.0
@@ -165,11 +201,24 @@ class SimulationConfig:
     max_upfront_hardware_budget: float | None = None
     max_monthly_service_budget_usd: float | None = None
     max_upfront_hardware_budget_usd: float | None = None
+    confidential_document_fraction: float = 0.0
     usd_per_service_cost_index_quarter: float = 60.0
     usd_per_hardware_capex_index: float = USD_PER_HARDWARE_CAPEX_INDEX_DEFAULT
+    hardware_calibration: str = "h100"
+    onprem_capability_multiplier: float = 1.0
     employee_mix: dict[str, float] | None = None
     engineering_context: str = "mixed"
+    adoption_propensity_concentration: float = 24.0
+    adoption_capability_elasticity: float = 0.16
+    improvement_base_probability: float = 0.42
+    improvement_capability_weight: float = 0.20
+    improvement_probability_min: float = 0.05
+    improvement_probability_max: float = 0.92
+    ai_gain_min: float = -0.25
+    ai_gain_max: float = 2.0
+    zero_risk_feature_gain: float = 0.005
     backend: str = "numpy"
+    show_progress: bool = True
     output_dir: Path = Path("outputs")
 
     @property
@@ -226,6 +275,46 @@ def _employee_types(config: SimulationConfig) -> pd.DataFrame:
     return employee_types
 
 
+def _hardware_calibration_profile(name: str) -> dict[str, float | str]:
+    try:
+        return HARDWARE_CALIBRATIONS[name]
+    except KeyError as exc:
+        raise ValueError(f"Unknown hardware calibration: {name}") from exc
+
+
+def _hardware_benchmark_row(hardware_calibration: str, hardware_name: str) -> pd.Series:
+    global _HARDWARE_BENCHMARKS
+    if _HARDWARE_BENCHMARKS is None:
+        _HARDWARE_BENCHMARKS = pd.read_csv(HARDWARE_BENCHMARKS_PATH)
+    match = _HARDWARE_BENCHMARKS[
+        (_HARDWARE_BENCHMARKS["hardware_calibration"] == hardware_calibration)
+        & (_HARDWARE_BENCHMARKS["hardware_scenario"] == hardware_name)
+    ]
+    if len(match) != 1:
+        raise ValueError(f"Missing hardware benchmark for {hardware_calibration}/{hardware_name}")
+    return match.iloc[0]
+
+
+def hardware_purchase_cost_usd(hardware_calibration: str, hardware_name: str) -> float:
+    if hardware_name == "cloud_api_only":
+        return 0.0
+    return float(_hardware_benchmark_row(hardware_calibration, hardware_name)["purchase_cost_usd"])
+
+
+def _hardware_replica_count(config: SimulationConfig, hardware_name: str) -> tuple[int, float]:
+    if hardware_name == "cloud_api_only" or config.max_upfront_hardware_budget_usd is None:
+        return 1, 1.0
+    unit_cost_usd = hardware_purchase_cost_usd(config.hardware_calibration, hardware_name)
+    replicas = int(config.max_upfront_hardware_budget_usd // unit_cost_usd)
+    if replicas >= 1:
+        return replicas, 1.0
+    return 1, config.max_upfront_hardware_budget_usd / unit_cost_usd
+
+
+def _hardware_benchmark(config: SimulationConfig, hardware_name: str) -> pd.Series:
+    return _hardware_benchmark_row(config.hardware_calibration, hardware_name)
+
+
 def _sample_users(rng: np.random.Generator, users: int, config: SimulationConfig) -> pd.DataFrame:
     tasks = _employee_types(config)
     persona_idx = rng.choice(len(BASE_PERSONAS), size=users, p=BASE_PERSONAS["share"].to_numpy())
@@ -233,28 +322,41 @@ def _sample_users(rng: np.random.Generator, users: int, config: SimulationConfig
     users_df = pd.DataFrame(
         {
             "persona": BASE_PERSONAS.iloc[persona_idx]["persona"].to_numpy(),
-            "adoption_prob": BASE_PERSONAS.iloc[persona_idx]["adoption_prob"].to_numpy(float),
-            "task_fit": BASE_PERSONAS.iloc[persona_idx]["task_fit"].to_numpy(float),
+            "adoption_mean": BASE_PERSONAS.iloc[persona_idx]["adoption_mean"].to_numpy(float),
             "usage_intensity": BASE_PERSONAS.iloc[persona_idx]["usage_intensity"].to_numpy(float),
             "wait_tolerance": BASE_PERSONAS.iloc[persona_idx]["wait_tolerance"].to_numpy(float),
             "task": tasks.iloc[task_idx]["task"].to_numpy(),
+            "capability_fit": tasks.iloc[task_idx]["capability_fit"].to_numpy(float),
             "mean_gain": tasks.iloc[task_idx]["mean_gain"].to_numpy(float),
             "sigma": tasks.iloc[task_idx]["sigma"].to_numpy(float),
         }
     )
+    concentration = config.adoption_propensity_concentration
+    means = users_df["adoption_mean"].to_numpy(float)
+    users_df["adoption_propensity"] = rng.beta(means * concentration, (1.0 - means) * concentration)
     return users_df
 
 
-def _capability_multiplier(period: int, model_name: str, plateau_quarter: int) -> float:
+def _user_vectors(users_df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    return (
+        users_df["adoption_propensity"].to_numpy(float, copy=True),
+        users_df["adoption_mean"].to_numpy(float, copy=True),
+        users_df["capability_fit"].to_numpy(float, copy=True),
+        users_df["usage_intensity"].to_numpy(float, copy=True),
+        users_df["wait_tolerance"].to_numpy(float, copy=True),
+        users_df["mean_gain"].to_numpy(float, copy=True),
+        users_df["sigma"].to_numpy(float, copy=True),
+    )
+
+
+def _capability_multiplier(period: int, model_name: str, plateau_quarter: int, resolution_months: int) -> float:
     model = MODEL_SCENARIOS[model_name]
-    effective_period = max(0, period - model["lag"])
+    effective_period = max(0.0, period - model["lag_months"] / resolution_months)
     if not model["growth"]:
         effective_period = min(effective_period, plateau_quarter)
 
     quarterly_growth = 1.085
     multiplier = quarterly_growth**effective_period
-    if model["kind"] == "oss":
-        multiplier *= 0.82
     return min(multiplier, 2.60)
 
 
@@ -273,28 +375,36 @@ def _hardware_adjustments(
     hardware_name: str,
     refresh_name: str,
     config: SimulationConfig,
-) -> tuple[np.ndarray, float, float]:
-    hardware = HARDWARE_SCENARIOS[hardware_name]
+) -> tuple[np.ndarray, float, float, float, float]:
     refresh = HARDWARE_REFRESH[refresh_name]
-    upfront_hardware_cost = hardware["capex_units"] * refresh["refresh_factor"]
-    hardware_budget_feasible = (
-        1.0
-        if config.upfront_hardware_budget_index is None or upfront_hardware_cost <= config.upfront_hardware_budget_index
+    benchmark = _hardware_benchmark(config, hardware_name) if hardware_name != "cloud_api_only" else None
+    replicas, hardware_budget_scale = _hardware_replica_count(config, hardware_name)
+    upfront_hardware_cost = (
+        hardware_purchase_cost_usd(config.hardware_calibration, hardware_name) * replicas / config.usd_per_service_cost_index_quarter
+        if benchmark is not None
         else 0.0
     )
-    if hardware_budget_feasible == 0.0:
-        return np.ones(len(users_df)), 0.0, hardware_budget_feasible
+    hardware_budget_feasible = 1.0 if hardware_budget_scale >= 0.999999 else 0.0
+    if hardware_name == "cloud_api_only":
+        return np.ones(len(users_df)), 0.0, hardware_budget_feasible, hardware_budget_scale, 1.0
 
-    effective_capacity = hardware["capacity"] * hardware["utilization"]
-    if effective_capacity <= 0:
-        return np.ones(len(users_df)), 0.0, hardware_budget_feasible
+    available_slots = float(benchmark["max_concurrent_users"]) * replicas * hardware_budget_scale
+    if available_slots <= 0.0:
+        return np.ones(len(users_df)), 0.0, hardware_budget_feasible, hardware_budget_scale, 1.0
 
-    queue_pressure = max(0.0, 1.0 - effective_capacity)
-    use_multiplier = 1.0 - queue_pressure * (1.0 - users_df["wait_tolerance"].to_numpy(float)) * 0.55
+    priority = 0.25 + users_df["wait_tolerance"].to_numpy(float)
+    use_multiplier = np.minimum(1.0, available_slots * priority / max(1e-9, float(priority.sum())))
 
     amortization_periods = max(1.0, 36 / config.resolution_months)
-    hardware_cost = upfront_hardware_cost / amortization_periods
-    return np.clip(use_multiplier, 0.05, 1.0), hardware_cost, hardware_budget_feasible
+    hardware_cost = upfront_hardware_cost * hardware_budget_scale / amortization_periods
+    hardware_bonus = 1.0 + (refresh["capability_bonus"] - 1.0) * hardware_budget_scale
+    return (
+        np.clip(use_multiplier, 0.0, 1.0),
+        hardware_cost,
+        hardware_budget_feasible,
+        hardware_budget_scale,
+        hardware_bonus,
+    )
 
 
 def _apply_service_budget_limit(
@@ -358,6 +468,61 @@ def _apply_access_plan(
     return access_multiplier, float(subscription_cost + topup_cost), float(topup_cost), exhausted_share
 
 
+def _local_hardware_multiplier(
+    wait_multiplier: np.ndarray,
+    wait_tolerance: np.ndarray,
+    hardware_name: str,
+    hardware_budget_scale: float,
+    local_fallback_policy: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    if hardware_name == "cloud_api_only":
+        zeros = np.zeros_like(wait_multiplier)
+        return zeros, zeros
+    local_capacity = wait_multiplier
+    if local_fallback_policy == "local_default":
+        fallback = local_capacity
+    else:
+        fallback = local_capacity * wait_tolerance
+    return np.clip(local_capacity, 0.0, 1.0), np.clip(fallback, 0.0, 1.0)
+
+
+def _effective_usage_with_local_fallback(
+    base_requested_usage: np.ndarray,
+    wait_multiplier: np.ndarray,
+    wait_tolerance: np.ndarray,
+    active: np.ndarray,
+    hardware_name: str,
+    hardware_budget_scale: float,
+    local_fallback_policy: str,
+    access_plan_name: str,
+    token_cost: float,
+    config: SimulationConfig,
+) -> tuple[np.ndarray, np.ndarray, float, float, float, float]:
+    confidential_requested = base_requested_usage * config.confidential_document_fraction
+    non_confidential_requested = base_requested_usage - confidential_requested
+    local_multiplier, fallback_multiplier = _local_hardware_multiplier(
+        wait_multiplier,
+        wait_tolerance,
+        hardware_name,
+        hardware_budget_scale,
+        local_fallback_policy,
+    )
+
+    access_multiplier, cloud_cost, topup_cost, exhausted_share = _apply_access_plan(
+        non_confidential_requested,
+        active,
+        access_plan_name,
+        token_cost,
+        config,
+    )
+    frontier_usage = non_confidential_requested * access_multiplier
+    frontier_usage, cloud_cost, service_budget_scale = _apply_service_budget_limit(frontier_usage, cloud_cost, config)
+    local_confidential_usage = confidential_requested * local_multiplier
+    fallback_usage = np.maximum(0.0, non_confidential_requested - frontier_usage) * fallback_multiplier
+    effective_usage = frontier_usage + local_confidential_usage + fallback_usage
+    return effective_usage, confidential_requested, cloud_cost, topup_cost, exhausted_share, service_budget_scale
+
+
 def _torch_module_and_device():
     try:
         import torch
@@ -372,10 +537,19 @@ def _torch_module_and_device():
 def _resolve_backend(backend: str) -> str:
     if backend == "numpy":
         return "numpy"
+    if backend == "numba":
+        _numba_module()
+        return "numba"
     if backend == "torch-mps":
         _torch_module_and_device()
         return "torch-mps"
     if backend == "auto":
+        try:
+            _numba_module()
+        except RuntimeError:
+            pass
+        else:
+            return "numba"
         try:
             _torch_module_and_device()
         except RuntimeError:
@@ -384,11 +558,13 @@ def _resolve_backend(backend: str) -> str:
     raise ValueError(f"Unknown backend: {backend}")
 
 
-def _simulate_one_scenario(args: tuple[str, str, str, str, str, SimulationConfig, int]) -> pd.DataFrame:
+def _simulate_one_scenario(args: tuple[str, str, str, str, str, str, SimulationConfig, int]) -> pd.DataFrame:
     if config_backend(args) == "torch-mps":
         return _simulate_one_scenario_torch_mps(args)
+    if config_backend(args) == "numba":
+        return _simulate_one_scenario_numba(args)
 
-    model_name, token_name, hardware_name, refresh_name, access_plan_name, config, scenario_seed = args
+    model_name, token_name, hardware_name, refresh_name, access_plan_name, local_fallback_policy, config, scenario_seed = args
     rng = np.random.default_rng(scenario_seed)
     run_rows = []
 
@@ -398,42 +574,64 @@ def _simulate_one_scenario(args: tuple[str, str, str, str, str, SimulationConfig
         return_changes: list[float] = []
 
         for period in range(config.periods):
-            capability = _capability_multiplier(period, model_name, config.plateau_quarter)
+            capability = _capability_multiplier(period, model_name, config.plateau_quarter, config.resolution_months)
             token_cost = _token_cost_multiplier(period, TOKEN_SCENARIOS[token_name], config.periods)
-            wait_multiplier, hardware_cost, hardware_budget_feasible = _hardware_adjustments(users_df, hardware_name, refresh_name, config)
-            hardware_bonus = (
-                HARDWARE_REFRESH[refresh_name]["capability_bonus"]
-                if hardware_name != "cloud_api_only" and hardware_budget_feasible > 0.0
-                else 1.0
-            )
+            (
+                wait_multiplier,
+                hardware_cost,
+                hardware_budget_feasible,
+                hardware_budget_scale,
+                hardware_bonus,
+            ) = _hardware_adjustments(users_df, hardware_name, refresh_name, config)
+            scenario_capability_multiplier = config.onprem_capability_multiplier if hardware_name != "cloud_api_only" else 1.0
+            effective_capability = capability * scenario_capability_multiplier
 
-            adoption_prob = np.clip(users_df["adoption_prob"].to_numpy(float) * (0.86 + 0.16 * capability), 0.02, 0.98)
+            adoption_multiplier = 1.0 + config.adoption_capability_elasticity * (capability - 1.0)
+            adoption_prob = np.clip(users_df["adoption_propensity"].to_numpy(float) * adoption_multiplier, 0.02, 0.98)
             active = rng.random(config.users) < adoption_prob
-            requested_usage = users_df["usage_intensity"].to_numpy(float) * wait_multiplier * active
-            access_multiplier, cloud_cost, topup_cost, exhausted_share = _apply_access_plan(
-                requested_usage,
+            base_requested_usage = users_df["usage_intensity"].to_numpy(float) * active
+            (
+                effective_usage,
+                confidential_requested,
+                cloud_cost,
+                topup_cost,
+                exhausted_share,
+                service_budget_scale,
+            ) = _effective_usage_with_local_fallback(
+                base_requested_usage,
+                wait_multiplier,
+                users_df["wait_tolerance"].to_numpy(float),
                 active,
+                hardware_name,
+                hardware_budget_scale,
+                local_fallback_policy,
                 access_plan_name,
                 token_cost,
                 config,
             )
-            effective_usage = requested_usage * access_multiplier
-            effective_usage, cloud_cost, service_budget_scale = _apply_service_budget_limit(effective_usage, cloud_cost, config)
-            access_multiplier = np.divide(
+            delivered_usage_multiplier = np.divide(
                 effective_usage,
-                requested_usage,
-                out=np.ones_like(requested_usage),
-                where=requested_usage > 0,
+                base_requested_usage,
+                out=np.ones_like(base_requested_usage),
+                where=base_requested_usage > 0,
             )
 
-            improvement_prob = np.clip(0.42 + 0.20 * capability * users_df["task_fit"].to_numpy(float), 0.05, 0.92)
+            capability_fit = users_df["capability_fit"].to_numpy(float)
+            improvement_prob = np.clip(
+                config.improvement_base_probability
+                + config.improvement_capability_weight * effective_capability * capability_fit,
+                config.improvement_probability_min,
+                config.improvement_probability_max,
+            )
             improved = rng.random(config.users) < improvement_prob
 
             sampled_gains = rng.normal(
-                users_df["mean_gain"].to_numpy(float) * capability * hardware_bonus * users_df["task_fit"].to_numpy(float),
+                users_df["mean_gain"].to_numpy(float) * effective_capability * hardware_bonus * capability_fit,
                 users_df["sigma"].to_numpy(float),
             )
-            realized_gain = np.clip(sampled_gains, -0.08, 0.70) * active * improved * wait_multiplier * access_multiplier
+            ai_realized_gain = np.clip(sampled_gains, config.ai_gain_min, config.ai_gain_max) * active * improved * delivered_usage_multiplier
+            zero_risk_gain = config.zero_risk_feature_gain * users_df["adoption_mean"].to_numpy(float)
+            realized_gain = zero_risk_gain + ai_realized_gain
             efficiency_index = 1.0 + realized_gain
 
             total_cost = cloud_cost + hardware_cost
@@ -448,12 +646,13 @@ def _simulate_one_scenario(args: tuple[str, str, str, str, str, SimulationConfig
 
             run_rows.append(
                 {
-                    "scenario": f"{model_name}|{token_name}|{access_plan_name}|{hardware_name}|{refresh_name}",
+                    "scenario": f"{model_name}|{token_name}|{access_plan_name}|{hardware_name}|{refresh_name}|{local_fallback_policy}",
                     "model": model_name,
                     "token_cost": token_name,
                     "access_plan": access_plan_name,
                     "hardware": hardware_name,
                     "hardware_refresh": refresh_name,
+                    "local_fallback": local_fallback_policy,
                     "backend": config.backend,
                     "run": run,
                     "period": period,
@@ -461,10 +660,15 @@ def _simulate_one_scenario(args: tuple[str, str, str, str, str, SimulationConfig
                     "capability_multiplier": capability,
                     "mean_efficiency_index": float(np.mean(efficiency_index)),
                     "mean_efficiency_gain": mean_gain,
+                    "zero_risk_efficiency_gain": float(np.mean(zero_risk_gain)),
+                    "mean_ai_efficiency_gain": float(np.mean(ai_realized_gain)),
+                    "negative_ai_gain_share": float(np.mean(ai_realized_gain < 0.0)),
                     "active_user_share": float(np.mean(active)),
-                    "delivered_usage_share": float(effective_usage.sum() / max(1e-9, requested_usage.sum())),
+                    "delivered_usage_share": float(effective_usage.sum() / max(1e-9, base_requested_usage.sum())),
+                    "confidential_usage_share": float(confidential_requested.sum() / max(1e-9, base_requested_usage.sum())),
                     "service_budget_scale": float(service_budget_scale),
                     "hardware_budget_feasible": float(hardware_budget_feasible),
+                    "hardware_budget_scale": float(hardware_budget_scale),
                     "rate_limit_exhausted_share": exhausted_share,
                     "cloud_cost_index": float(cloud_cost),
                     "topup_cost_index": float(topup_cost),
@@ -479,23 +683,470 @@ def _simulate_one_scenario(args: tuple[str, str, str, str, str, SimulationConfig
     return pd.DataFrame(run_rows)
 
 
-def config_backend(args: tuple[str, str, str, str, str, SimulationConfig, int]) -> str:
-    return args[5].backend
+def _numba_module():
+    global _NUMBA_MODULE, _NUMBA_IMPORT_ATTEMPTED
+    if _NUMBA_MODULE is not None:
+        return _NUMBA_MODULE
+    if not _NUMBA_IMPORT_ATTEMPTED:
+        _NUMBA_IMPORT_ATTEMPTED = True
+        try:
+            import numba
+        except ImportError as exc:
+            raise RuntimeError("Numba is required for --backend numba. Install numba in the cofin environment.") from exc
+        _NUMBA_MODULE = numba
+    return _NUMBA_MODULE
 
 
-def _simulate_one_scenario_torch_mps(args: tuple[str, str, str, str, str, SimulationConfig, int]) -> pd.DataFrame:
-    model_name, token_name, hardware_name, refresh_name, access_plan_name, config, scenario_seed = args
+def _model_code(model_name: str, resolution_months: int) -> tuple[int, float]:
+    model = MODEL_SCENARIOS[model_name]
+    return (1 if model["growth"] else 0), float(model["lag_months"]) / resolution_months
+
+
+def _token_code(token_name: str) -> int:
+    if token_name == "flat":
+        return 0
+    if token_name == "gradual_break_even":
+        return 1
+    if token_name == "sudden_break_even":
+        return 2
+    raise ValueError(f"Unknown token scenario: {token_name}")
+
+
+def _access_plan_code(access_plan_name: str) -> int:
+    if access_plan_name == "pay_per_use":
+        return 0
+    if access_plan_name == "flatrate_limited":
+        return 1
+    if access_plan_name == "flatrate_limited_topup":
+        return 2
+    raise ValueError(f"Unknown access plan: {access_plan_name}")
+
+
+def _local_fallback_policy_code(local_fallback_policy: str) -> int:
+    if local_fallback_policy == "persona_choice":
+        return 0
+    if local_fallback_policy == "local_default":
+        return 1
+    raise ValueError(f"Unknown local fallback policy: {local_fallback_policy}")
+
+
+def _numba_simulator():
+    numba = _numba_module()
+
+    @numba.njit(cache=True)
+    def simulate_run(
+        adoption_propensity: np.ndarray,
+        adoption_mean: np.ndarray,
+        capability_fit: np.ndarray,
+        usage_intensity: np.ndarray,
+        wait_tolerance: np.ndarray,
+        mean_gain_base: np.ndarray,
+        sigma: np.ndarray,
+        wait_multiplier: np.ndarray,
+        adoption_draws: np.ndarray,
+        improvement_draws: np.ndarray,
+        normal_draws: np.ndarray,
+        model_growth: int,
+        model_lag: float,
+        plateau_quarter: int,
+        token_mode: int,
+        access_plan_mode: int,
+        allowance: float,
+        subscription_cost_per_active_user_quarter: float,
+        base_cost_index_per_active_user_quarter: float,
+        quarters_per_period: float,
+        service_budget_per_period: float,
+        confidential_document_fraction: float,
+        hardware_is_cloud: int,
+        local_fallback_default: int,
+        scenario_capability_multiplier: float,
+        hardware_bonus: float,
+        hardware_cost: float,
+        hardware_budget_feasible: float,
+        hardware_budget_scale: float,
+        resolution_months: int,
+        adoption_capability_elasticity: float,
+        improvement_base_probability: float,
+        improvement_capability_weight: float,
+        improvement_probability_min: float,
+        improvement_probability_max: float,
+        ai_gain_min: float,
+        ai_gain_max: float,
+        zero_risk_feature_gain: float,
+    ) -> np.ndarray:
+        periods, users = adoption_draws.shape
+        metrics = np.empty((periods, 19), dtype=np.float64)
+        previous_return = 0.0
+        change_count = 0
+        change_mean = 0.0
+        change_m2 = 0.0
+
+        for period in range(periods):
+            effective_period = period - model_lag
+            if effective_period < 0:
+                effective_period = 0
+            if model_growth == 0 and effective_period > plateau_quarter:
+                effective_period = plateau_quarter
+
+            capability = 1.085**effective_period
+            if capability > 2.60:
+                capability = 2.60
+            effective_capability = capability * scenario_capability_multiplier
+
+            if token_mode == 0:
+                token_cost = 1.0
+            elif token_mode == 1:
+                token_cost = 1.0 + 0.85 * period / max(1, periods - 1)
+            else:
+                token_cost = 1.0 if period < max(1, periods // 3) else 1.85
+
+            active_count = 0.0
+            frontier_requested_usage_sum = 0.0
+            included_usage_sum = 0.0
+            excess_usage_sum = 0.0
+            exhausted_active = 0.0
+            confidential_requested_sum = 0.0
+            base_requested_usage_sum = 0.0
+
+            for user in range(users):
+                adoption_prob = adoption_propensity[user] * (1.0 + adoption_capability_elasticity * (capability - 1.0))
+                if adoption_prob < 0.02:
+                    adoption_prob = 0.02
+                elif adoption_prob > 0.98:
+                    adoption_prob = 0.98
+
+                active = adoption_draws[period, user] < adoption_prob
+                if active:
+                    active_count += 1.0
+
+                base_requested_usage = usage_intensity[user] * (1.0 if active else 0.0)
+                base_requested_usage_sum += base_requested_usage
+                confidential_requested = base_requested_usage * confidential_document_fraction
+                non_confidential_requested = base_requested_usage - confidential_requested
+                confidential_requested_sum += confidential_requested
+                frontier_requested_usage_sum += non_confidential_requested
+
+                delivered_usage = non_confidential_requested
+                if access_plan_mode != 0:
+                    if non_confidential_requested <= allowance:
+                        included_usage_sum += non_confidential_requested
+                    else:
+                        included_usage_sum += allowance
+                        excess_usage_sum += non_confidential_requested - allowance
+                        if active:
+                            exhausted_active += 1.0
+                    if access_plan_mode == 1 and non_confidential_requested > allowance:
+                        delivered_usage = allowance
+            if access_plan_mode == 0:
+                cloud_cost = (
+                    base_cost_index_per_active_user_quarter
+                    * token_cost
+                    * frontier_requested_usage_sum
+                    * quarters_per_period
+                )
+                topup_cost = 0.0
+                exhausted_share = 0.0
+            else:
+                subscription_cost = (
+                    subscription_cost_per_active_user_quarter
+                    * active_count
+                    * quarters_per_period
+                )
+                topup_cost = 0.0
+                if access_plan_mode == 2:
+                    topup_cost = (
+                        base_cost_index_per_active_user_quarter
+                        * token_cost
+                        * excess_usage_sum
+                        * quarters_per_period
+                    )
+                cloud_cost = subscription_cost + topup_cost
+                exhausted_share = exhausted_active / users
+
+            service_budget_scale = 1.0
+            if service_budget_per_period >= 0.0 and cloud_cost > service_budget_per_period:
+                service_budget_scale = service_budget_per_period / max(cloud_cost, 1e-9)
+                cloud_cost = service_budget_per_period
+
+            effective_usage_sum = 0.0
+            total_ai_gain = 0.0
+            negative_ai_gain_count = 0.0
+            zero_risk_gain_sum = 0.0
+
+            for user in range(users):
+                adoption_prob = adoption_propensity[user] * (1.0 + adoption_capability_elasticity * (capability - 1.0))
+                if adoption_prob < 0.02:
+                    adoption_prob = 0.02
+                elif adoption_prob > 0.98:
+                    adoption_prob = 0.98
+
+                active = adoption_draws[period, user] < adoption_prob
+                base_requested_usage = usage_intensity[user] * (1.0 if active else 0.0)
+                confidential_requested = base_requested_usage * confidential_document_fraction
+                non_confidential_requested = base_requested_usage - confidential_requested
+
+                frontier_delivered = non_confidential_requested
+                if access_plan_mode != 0 and access_plan_mode == 1 and non_confidential_requested > allowance:
+                    frontier_delivered = allowance
+                frontier_delivered *= service_budget_scale
+
+                local_multiplier = 0.0
+                fallback_multiplier = 0.0
+                if hardware_is_cloud != 1:
+                    local_multiplier = wait_multiplier[user]
+                    if local_multiplier > 1.0:
+                        local_multiplier = 1.0
+                    if local_fallback_default == 1:
+                        fallback_multiplier = local_multiplier
+                    else:
+                        fallback_multiplier = local_multiplier * wait_tolerance[user]
+                    if fallback_multiplier > 1.0:
+                        fallback_multiplier = 1.0
+
+                local_confidential_usage = confidential_requested * local_multiplier
+                fallback_usage = (non_confidential_requested - frontier_delivered) * fallback_multiplier
+                if fallback_usage < 0.0:
+                    fallback_usage = 0.0
+                effective_usage = frontier_delivered + local_confidential_usage + fallback_usage
+                effective_usage_sum += effective_usage
+
+                improvement_prob = improvement_base_probability + improvement_capability_weight * effective_capability * capability_fit[user]
+                if improvement_prob < improvement_probability_min:
+                    improvement_prob = improvement_probability_min
+                elif improvement_prob > improvement_probability_max:
+                    improvement_prob = improvement_probability_max
+
+                improved = improvement_draws[period, user] < improvement_prob
+                sampled_gain = (
+                    normal_draws[period, user] * sigma[user]
+                    + mean_gain_base[user] * effective_capability * hardware_bonus * capability_fit[user]
+                )
+                if sampled_gain < ai_gain_min:
+                    sampled_gain = ai_gain_min
+                elif sampled_gain > ai_gain_max:
+                    sampled_gain = ai_gain_max
+
+                access_multiplier = 1.0
+                if base_requested_usage > 0.0:
+                    access_multiplier = effective_usage / base_requested_usage
+
+                ai_realized_gain = sampled_gain * (1.0 if active else 0.0) * (1.0 if improved else 0.0) * access_multiplier
+                total_ai_gain += ai_realized_gain
+                if ai_realized_gain < 0.0:
+                    negative_ai_gain_count += 1.0
+                zero_risk_gain_sum += zero_risk_feature_gain * adoption_mean[user]
+
+            total_cost = cloud_cost + hardware_cost
+            total_realized_gain = total_ai_gain + zero_risk_gain_sum
+            mean_gain = total_realized_gain / users
+            cost_per_increment = total_cost / max(1e-9, total_realized_gain)
+            return_rate = mean_gain / max(1e-9, total_cost / users)
+
+            risk = 0.0
+            if period > 0:
+                change = return_rate - previous_return
+                change_count += 1
+                delta = change - change_mean
+                change_mean += delta / change_count
+                change_m2 += delta * (change - change_mean)
+                if change_count > 1:
+                    risk = (change_m2 / (change_count - 1)) ** 0.5
+            previous_return = return_rate
+
+            metrics[period, 0] = period
+            metrics[period, 1] = period * resolution_months
+            metrics[period, 2] = capability
+            metrics[period, 3] = 1.0 + mean_gain
+            metrics[period, 4] = mean_gain
+            metrics[period, 5] = active_count / users
+            metrics[period, 6] = effective_usage_sum / max(1e-9, base_requested_usage_sum)
+            metrics[period, 7] = confidential_requested_sum / max(1e-9, base_requested_usage_sum)
+            metrics[period, 8] = service_budget_scale
+            metrics[period, 9] = hardware_budget_feasible
+            metrics[period, 10] = hardware_budget_scale
+            metrics[period, 11] = exhausted_share
+            metrics[period, 12] = cloud_cost
+            metrics[period, 13] = topup_cost
+            metrics[period, 14] = total_cost
+            metrics[period, 15] = cost_per_increment
+            metrics[period, 16] = zero_risk_gain_sum / users
+            metrics[period, 17] = total_ai_gain / users
+            metrics[period, 18] = negative_ai_gain_count / users
+            # return_rate and risk are appended separately to keep the compact matrix small.
+
+        return metrics
+
+    return simulate_run
+
+
+def _simulate_one_scenario_numba(args: tuple[str, str, str, str, str, str, SimulationConfig, int]) -> pd.DataFrame:
+    model_name, token_name, hardware_name, refresh_name, access_plan_name, local_fallback_policy, config, scenario_seed = args
+    rng = np.random.default_rng(scenario_seed)
+    users = config.users
+    periods = config.periods
+    simulate_run = _numba_simulator()
+    access_plan = ACCESS_PLANS[access_plan_name]
+    allowance = min(access_plan["five_hour_allowance"], access_plan["weekly_allowance"]) * config.quarters_per_period
+    service_budget_per_period = config.service_budget_per_period
+    model_growth, model_lag = _model_code(model_name, config.resolution_months)
+    token_mode = _token_code(token_name)
+    access_plan_mode = _access_plan_code(access_plan_name)
+    local_fallback_default = _local_fallback_policy_code(local_fallback_policy)
+    scenario_label = f"{model_name}|{token_name}|{access_plan_name}|{hardware_name}|{refresh_name}|{local_fallback_policy}"
+    total_rows = config.runs * periods
+    hardware_is_cloud = 1 if hardware_name == "cloud_api_only" else 0
+
+    data: dict[str, np.ndarray] = {
+        "scenario": np.full(total_rows, scenario_label, dtype=object),
+        "model": np.full(total_rows, model_name, dtype=object),
+        "token_cost": np.full(total_rows, token_name, dtype=object),
+        "access_plan": np.full(total_rows, access_plan_name, dtype=object),
+        "hardware": np.full(total_rows, hardware_name, dtype=object),
+        "hardware_refresh": np.full(total_rows, refresh_name, dtype=object),
+        "local_fallback": np.full(total_rows, local_fallback_policy, dtype=object),
+        "backend": np.full(total_rows, "numba", dtype=object),
+        "run": np.empty(total_rows, dtype=np.int64),
+        "period": np.empty(total_rows, dtype=np.int64),
+        "month": np.empty(total_rows, dtype=np.int64),
+        "capability_multiplier": np.empty(total_rows, dtype=np.float64),
+        "mean_efficiency_index": np.empty(total_rows, dtype=np.float64),
+        "mean_efficiency_gain": np.empty(total_rows, dtype=np.float64),
+        "zero_risk_efficiency_gain": np.empty(total_rows, dtype=np.float64),
+        "mean_ai_efficiency_gain": np.empty(total_rows, dtype=np.float64),
+        "negative_ai_gain_share": np.empty(total_rows, dtype=np.float64),
+        "active_user_share": np.empty(total_rows, dtype=np.float64),
+        "delivered_usage_share": np.empty(total_rows, dtype=np.float64),
+        "confidential_usage_share": np.empty(total_rows, dtype=np.float64),
+        "service_budget_scale": np.empty(total_rows, dtype=np.float64),
+        "hardware_budget_feasible": np.empty(total_rows, dtype=np.float64),
+        "hardware_budget_scale": np.empty(total_rows, dtype=np.float64),
+        "rate_limit_exhausted_share": np.empty(total_rows, dtype=np.float64),
+        "cloud_cost_index": np.empty(total_rows, dtype=np.float64),
+        "topup_cost_index": np.empty(total_rows, dtype=np.float64),
+        "hardware_cost_index": np.empty(total_rows, dtype=np.float64),
+        "total_cost_index": np.empty(total_rows, dtype=np.float64),
+        "cost_per_efficiency_increment": np.empty(total_rows, dtype=np.float64),
+        "return_rate": np.empty(total_rows, dtype=np.float64),
+        "risk": np.empty(total_rows, dtype=np.float64),
+    }
+
+    for run in range(config.runs):
+        users_df = _sample_users(rng, users, config)
+        adoption_propensity, adoption_mean, capability_fit, usage_intensity, wait_tolerance, mean_gain_base, sigma = _user_vectors(users_df)
+        (
+            wait_multiplier,
+            hardware_cost,
+            hardware_budget_feasible,
+            hardware_budget_scale,
+            hardware_bonus,
+        ) = _hardware_adjustments(users_df, hardware_name, refresh_name, config)
+        scenario_capability_multiplier = config.onprem_capability_multiplier if hardware_name != "cloud_api_only" else 1.0
+
+        adoption_draws = rng.random((periods, users))
+        improvement_draws = rng.random((periods, users))
+        normal_draws = rng.normal(size=(periods, users))
+        metrics = simulate_run(
+            adoption_propensity,
+            adoption_mean,
+            capability_fit,
+            usage_intensity,
+            wait_tolerance,
+            mean_gain_base,
+            sigma,
+            wait_multiplier,
+            adoption_draws,
+            improvement_draws,
+            normal_draws,
+            model_growth,
+            model_lag,
+            config.plateau_quarter,
+            token_mode,
+            access_plan_mode,
+            allowance,
+            access_plan["subscription_cost_per_active_user_quarter"],
+            config.base_cost_index_per_active_user_quarter,
+            config.quarters_per_period,
+            -1.0 if service_budget_per_period is None else service_budget_per_period,
+            config.confidential_document_fraction,
+            hardware_is_cloud,
+            local_fallback_default,
+            scenario_capability_multiplier,
+            hardware_bonus,
+            hardware_cost,
+            hardware_budget_feasible,
+            hardware_budget_scale,
+            config.resolution_months,
+            config.adoption_capability_elasticity,
+            config.improvement_base_probability,
+            config.improvement_capability_weight,
+            config.improvement_probability_min,
+            config.improvement_probability_max,
+            config.ai_gain_min,
+            config.ai_gain_max,
+            config.zero_risk_feature_gain,
+        )
+
+        row_slice = slice(run * periods, (run + 1) * periods)
+        data["run"][row_slice] = run
+        data["period"][row_slice] = metrics[:, 0].astype(np.int64)
+        data["month"][row_slice] = metrics[:, 1].astype(np.int64)
+        data["capability_multiplier"][row_slice] = metrics[:, 2]
+        data["mean_efficiency_index"][row_slice] = metrics[:, 3]
+        data["mean_efficiency_gain"][row_slice] = metrics[:, 4]
+        data["zero_risk_efficiency_gain"][row_slice] = metrics[:, 16]
+        data["mean_ai_efficiency_gain"][row_slice] = metrics[:, 17]
+        data["negative_ai_gain_share"][row_slice] = metrics[:, 18]
+        data["active_user_share"][row_slice] = metrics[:, 5]
+        data["delivered_usage_share"][row_slice] = metrics[:, 6]
+        data["confidential_usage_share"][row_slice] = metrics[:, 7]
+        data["service_budget_scale"][row_slice] = metrics[:, 8]
+        data["hardware_budget_feasible"][row_slice] = metrics[:, 9]
+        data["hardware_budget_scale"][row_slice] = metrics[:, 10]
+        data["rate_limit_exhausted_share"][row_slice] = metrics[:, 11]
+        data["cloud_cost_index"][row_slice] = metrics[:, 12]
+        data["topup_cost_index"][row_slice] = metrics[:, 13]
+        data["hardware_cost_index"][row_slice] = hardware_cost
+        data["total_cost_index"][row_slice] = metrics[:, 14]
+        data["cost_per_efficiency_increment"][row_slice] = metrics[:, 15]
+        data["return_rate"][row_slice] = metrics[:, 4] / np.maximum(1e-9, metrics[:, 14] / users)
+
+        run_returns = data["return_rate"][row_slice]
+        run_risk = np.zeros(periods, dtype=np.float64)
+        if periods > 2:
+            deltas = np.diff(run_returns)
+            for idx in range(2, periods):
+                run_risk[idx] = float(np.std(deltas[:idx], ddof=1))
+        data["risk"][row_slice] = run_risk
+
+    return pd.DataFrame(data)
+
+
+def config_backend(args: tuple[str, str, str, str, str, str, SimulationConfig, int]) -> str:
+    return args[6].backend
+
+
+def _simulate_one_scenario_torch_mps(args: tuple[str, str, str, str, str, str, SimulationConfig, int]) -> pd.DataFrame:
+    model_name, token_name, hardware_name, refresh_name, access_plan_name, local_fallback_policy, config, scenario_seed = args
     torch, device = _torch_module_and_device()
     rng = np.random.default_rng(scenario_seed)
     run_rows = []
 
     for run in range(config.runs):
         users_df = _sample_users(rng, config.users, config)
-        wait_multiplier_np, hardware_cost, hardware_budget_feasible = _hardware_adjustments(users_df, hardware_name, refresh_name, config)
+        (
+            wait_multiplier_np,
+            hardware_cost,
+            hardware_budget_feasible,
+            hardware_budget_scale,
+            hardware_bonus,
+        ) = _hardware_adjustments(users_df, hardware_name, refresh_name, config)
+        scenario_capability_multiplier = config.onprem_capability_multiplier if hardware_name != "cloud_api_only" else 1.0
 
-        adoption_base = torch.as_tensor(users_df["adoption_prob"].to_numpy(float, copy=True), dtype=torch.float32, device=device)
-        task_fit = torch.as_tensor(users_df["task_fit"].to_numpy(float, copy=True), dtype=torch.float32, device=device)
+        adoption_propensity = torch.as_tensor(users_df["adoption_propensity"].to_numpy(float, copy=True), dtype=torch.float32, device=device)
+        adoption_mean = torch.as_tensor(users_df["adoption_mean"].to_numpy(float, copy=True), dtype=torch.float32, device=device)
+        capability_fit = torch.as_tensor(users_df["capability_fit"].to_numpy(float, copy=True), dtype=torch.float32, device=device)
         usage_intensity = torch.as_tensor(users_df["usage_intensity"].to_numpy(float, copy=True), dtype=torch.float32, device=device)
+        wait_tolerance = torch.as_tensor(users_df["wait_tolerance"].to_numpy(float, copy=True), dtype=torch.float32, device=device)
         mean_gain_base = torch.as_tensor(users_df["mean_gain"].to_numpy(float, copy=True), dtype=torch.float32, device=device)
         sigma = torch.as_tensor(users_df["sigma"].to_numpy(float, copy=True), dtype=torch.float32, device=device)
         wait_multiplier = torch.as_tensor(wait_multiplier_np, dtype=torch.float32, device=device)
@@ -506,57 +1157,75 @@ def _simulate_one_scenario_torch_mps(args: tuple[str, str, str, str, str, Simula
         for period in range(config.periods):
             period_seed = scenario_seed + run * 100003 + period
             cpu_generator = torch.Generator(device="cpu").manual_seed(period_seed)
-            capability = _capability_multiplier(period, model_name, config.plateau_quarter)
+            capability = _capability_multiplier(period, model_name, config.plateau_quarter, config.resolution_months)
             token_cost = _token_cost_multiplier(period, TOKEN_SCENARIOS[token_name], config.periods)
-            hardware_bonus = (
-                HARDWARE_REFRESH[refresh_name]["capability_bonus"]
-                if hardware_name != "cloud_api_only" and hardware_budget_feasible > 0.0
-                else 1.0
-            )
+            effective_capability = capability * scenario_capability_multiplier
 
-            adoption_prob = torch.clamp(adoption_base * (0.86 + 0.16 * capability), 0.02, 0.98)
+            adoption_multiplier = 1.0 + config.adoption_capability_elasticity * (capability - 1.0)
+            adoption_prob = torch.clamp(adoption_propensity * adoption_multiplier, 0.02, 0.98)
             active = torch.rand(config.users, generator=cpu_generator).to(device) < adoption_prob
-            requested_usage = usage_intensity * wait_multiplier * active.to(torch.float32)
+            base_requested_usage = usage_intensity * active.to(torch.float32)
+            confidential_requested = base_requested_usage * config.confidential_document_fraction
+            non_confidential_requested = base_requested_usage - confidential_requested
             access_multiplier, cloud_cost, topup_cost, exhausted_share = _apply_access_plan_torch(
-                requested_usage,
+                non_confidential_requested,
                 active,
                 access_plan_name,
                 token_cost,
                 config,
                 torch,
             )
-            effective_usage = requested_usage * access_multiplier
-            effective_usage, cloud_cost, service_budget_scale = _apply_service_budget_limit_torch(
-                effective_usage,
+            frontier_usage = non_confidential_requested * access_multiplier
+            frontier_usage, cloud_cost, service_budget_scale = _apply_service_budget_limit_torch(
+                frontier_usage,
                 cloud_cost,
                 config,
             )
-            access_multiplier = torch.where(
-                requested_usage > 0,
-                effective_usage / torch.clamp(requested_usage, min=1e-9),
-                torch.ones_like(requested_usage),
+            if hardware_name == "cloud_api_only":
+                local_multiplier = torch.zeros_like(wait_multiplier)
+                fallback_multiplier = torch.zeros_like(wait_multiplier)
+            else:
+                local_multiplier = torch.clamp(wait_multiplier, 0.0, 1.0)
+                if local_fallback_policy == "local_default":
+                    fallback_multiplier = local_multiplier
+                else:
+                    fallback_multiplier = torch.clamp(local_multiplier * wait_tolerance, 0.0, 1.0)
+            local_confidential_usage = confidential_requested * local_multiplier
+            fallback_usage = torch.clamp(non_confidential_requested - frontier_usage, min=0.0) * fallback_multiplier
+            effective_usage = frontier_usage + local_confidential_usage + fallback_usage
+            delivered_usage_multiplier = torch.where(
+                base_requested_usage > 0,
+                effective_usage / torch.clamp(base_requested_usage, min=1e-9),
+                torch.ones_like(base_requested_usage),
             )
 
-            improvement_prob = torch.clamp(0.42 + 0.20 * capability * task_fit, 0.05, 0.92)
+            improvement_prob = torch.clamp(
+                config.improvement_base_probability
+                + config.improvement_capability_weight * effective_capability * capability_fit,
+                config.improvement_probability_min,
+                config.improvement_probability_max,
+            )
             improved = torch.rand(config.users, generator=cpu_generator).to(device) < improvement_prob
             sampled_gains = (
                 torch.randn(config.users, generator=cpu_generator).to(device) * sigma
-                + mean_gain_base * capability * hardware_bonus * task_fit
+                + mean_gain_base * effective_capability * hardware_bonus * capability_fit
             )
-            realized_gain = (
-                torch.clamp(sampled_gains, -0.08, 0.70)
+            ai_realized_gain = (
+                torch.clamp(sampled_gains, config.ai_gain_min, config.ai_gain_max)
                 * active.to(torch.float32)
                 * improved.to(torch.float32)
-                * wait_multiplier
-                * access_multiplier
+                * delivered_usage_multiplier
             )
+            zero_risk_gain = config.zero_risk_feature_gain * adoption_mean
+            realized_gain = zero_risk_gain + ai_realized_gain
             efficiency_index = 1.0 + realized_gain
 
             total_cost = cloud_cost + hardware_cost
             mean_gain = float(torch.mean(efficiency_index - 1.0).cpu())
             total_gain = float(torch.sum(efficiency_index - 1.0).cpu())
-            requested_usage_sum = float(torch.sum(requested_usage).cpu())
+            base_requested_usage_sum = float(torch.sum(base_requested_usage).cpu())
             effective_usage_sum = float(torch.sum(effective_usage).cpu())
+            confidential_requested_sum = float(torch.sum(confidential_requested).cpu())
             cost_per_increment = total_cost / max(1e-9, total_gain)
             return_rate = mean_gain / max(1e-9, total_cost / config.users)
 
@@ -567,12 +1236,13 @@ def _simulate_one_scenario_torch_mps(args: tuple[str, str, str, str, str, Simula
 
             run_rows.append(
                 {
-                    "scenario": f"{model_name}|{token_name}|{access_plan_name}|{hardware_name}|{refresh_name}",
+                    "scenario": f"{model_name}|{token_name}|{access_plan_name}|{hardware_name}|{refresh_name}|{local_fallback_policy}",
                     "model": model_name,
                     "token_cost": token_name,
                     "access_plan": access_plan_name,
                     "hardware": hardware_name,
                     "hardware_refresh": refresh_name,
+                    "local_fallback": local_fallback_policy,
                     "backend": "torch-mps",
                     "run": run,
                     "period": period,
@@ -580,10 +1250,15 @@ def _simulate_one_scenario_torch_mps(args: tuple[str, str, str, str, str, Simula
                     "capability_multiplier": capability,
                     "mean_efficiency_index": float(torch.mean(efficiency_index).cpu()),
                     "mean_efficiency_gain": mean_gain,
+                    "zero_risk_efficiency_gain": float(torch.mean(zero_risk_gain).cpu()),
+                    "mean_ai_efficiency_gain": float(torch.mean(ai_realized_gain).cpu()),
+                    "negative_ai_gain_share": float(torch.mean((ai_realized_gain < 0.0).to(torch.float32)).cpu()),
                     "active_user_share": float(torch.mean(active.to(torch.float32)).cpu()),
-                    "delivered_usage_share": float(effective_usage_sum / max(1e-9, requested_usage_sum)),
+                    "delivered_usage_share": float(effective_usage_sum / max(1e-9, base_requested_usage_sum)),
+                    "confidential_usage_share": float(confidential_requested_sum / max(1e-9, base_requested_usage_sum)),
                     "service_budget_scale": float(service_budget_scale),
                     "hardware_budget_feasible": float(hardware_budget_feasible),
+                    "hardware_budget_scale": float(hardware_budget_scale),
                     "rate_limit_exhausted_share": exhausted_share,
                     "cloud_cost_index": float(cloud_cost),
                     "topup_cost_index": float(topup_cost),
@@ -659,14 +1334,17 @@ def _apply_service_budget_limit_torch(
     return delivered_usage * scale, budget, scale
 
 
-def scenario_grid() -> Iterable[tuple[str, str, str, str, str]]:
-    return itertools.product(
+def scenario_grid() -> Iterable[tuple[str, str, str, str, str, str]]:
+    for model_name, token_name, hardware_name, refresh_name, access_plan_name in itertools.product(
         MODEL_SCENARIOS.keys(),
         TOKEN_SCENARIOS.keys(),
         HARDWARE_SCENARIOS.keys(),
         HARDWARE_REFRESH.keys(),
         ACCESS_PLANS.keys(),
-    )
+    ):
+        fallback_policies = ("persona_choice",) if hardware_name == "cloud_api_only" else LOCAL_FALLBACK_POLICIES
+        for local_fallback_policy in fallback_policies:
+            yield model_name, token_name, hardware_name, refresh_name, access_plan_name, local_fallback_policy
 
 
 def run_simulation(config: SimulationConfig) -> pd.DataFrame:
@@ -678,14 +1356,26 @@ def run_simulation(config: SimulationConfig) -> pd.DataFrame:
     if config.concurrency <= 1:
         frames = [
             _simulate_one_scenario(args)
-            for args in tqdm(scenario_args, desc="Simulating scenarios", unit="scenario")
+            for args in tqdm(
+                scenario_args,
+                desc="Simulating scenarios",
+                unit="scenario",
+                disable=not config.show_progress,
+            )
         ]
     else:
         workers = min(config.concurrency, len(scenario_args))
         frames = []
-        with ThreadPoolExecutor(max_workers=workers) as executor:
+        executor_cls = ThreadPoolExecutor if config.backend == "torch-mps" else ProcessPoolExecutor
+        with executor_cls(max_workers=workers) as executor:
             futures = [executor.submit(_simulate_one_scenario, args) for args in scenario_args]
-            for future in tqdm(as_completed(futures), total=len(futures), desc="Simulating scenarios", unit="scenario"):
+            for future in tqdm(
+                as_completed(futures),
+                total=len(futures),
+                desc="Simulating scenarios",
+                unit="scenario",
+                disable=not config.show_progress,
+            ):
                 frames.append(future.result())
     return pd.concat(frames, ignore_index=True)
 
@@ -708,8 +1398,22 @@ def _validate_budget_args(args: argparse.Namespace) -> None:
         raise SystemExit("Specify either --max-upfront-hardware-budget or --max-upfront-hardware-budget-usd, not both.")
     if args.usd_per_service_cost_index_quarter <= 0:
         raise SystemExit("--usd-per-service-cost-index-quarter must be positive.")
-    if args.usd_per_hardware_capex_index <= 0:
+    if args.usd_per_hardware_capex_index is not None and args.usd_per_hardware_capex_index <= 0:
         raise SystemExit("--usd-per-hardware-capex-index must be positive.")
+    if not 0.0 <= args.confidential_document_fraction <= 1.0:
+        raise SystemExit("--confidential-document-fraction must be between 0 and 1.")
+    if args.adoption_propensity_concentration <= 0:
+        raise SystemExit("--adoption-propensity-concentration must be positive.")
+    if not 0.0 <= args.improvement_base_probability <= 1.0:
+        raise SystemExit("--improvement-base-probability must be between 0 and 1.")
+    if args.improvement_capability_weight < 0:
+        raise SystemExit("--improvement-capability-weight must be non-negative.")
+    if not 0.0 <= args.improvement_probability_min <= args.improvement_probability_max <= 1.0:
+        raise SystemExit("Improvement probability clip bounds must be between 0 and 1, with min no greater than max.")
+    if args.ai_gain_min > args.ai_gain_max:
+        raise SystemExit("--ai-gain-min must be no greater than --ai-gain-max.")
+    if args.zero_risk_feature_gain < 0:
+        raise SystemExit("--zero-risk-feature-gain must be non-negative.")
 
 
 def summarize(results: pd.DataFrame) -> pd.DataFrame:
@@ -720,16 +1424,22 @@ def summarize(results: pd.DataFrame) -> pd.DataFrame:
         "access_plan",
         "hardware",
         "hardware_refresh",
+        "local_fallback",
         "backend",
         "period",
         "month",
     ]
     metrics = [
         "mean_efficiency_gain",
+        "zero_risk_efficiency_gain",
+        "mean_ai_efficiency_gain",
+        "negative_ai_gain_share",
         "active_user_share",
         "delivered_usage_share",
+        "confidential_usage_share",
         "service_budget_scale",
         "hardware_budget_feasible",
+        "hardware_budget_scale",
         "rate_limit_exhausted_share",
         "cloud_cost_index",
         "topup_cost_index",
@@ -790,10 +1500,15 @@ def _slice_grid_shape(slice_count: int) -> tuple[int, int]:
 
 
 def _classify_llm_access(group: pd.DataFrame) -> pd.Series:
+    local_budget_scale = (
+        group["hardware_budget_scale_mean"]
+        if "hardware_budget_scale_mean" in group
+        else group["hardware_budget_feasible_mean"]
+    )
     return np.where(
         group["hardware"] == "cloud_api_only",
         "Service LLM",
-        np.where(group["hardware_budget_feasible_mean"] > 0.0, "Local LLM", "Budget-blocked Local"),
+        np.where(local_budget_scale > 0.0, "Local LLM", "Budget-blocked Local"),
     )
 
 
@@ -974,7 +1689,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--years", type=float, default=3.0)
     parser.add_argument("--resolution-months", type=int, default=3)
     parser.add_argument("--runs", type=int, default=1000)
-    parser.add_argument("--concurrency", type=int, default=1)
+    parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY)
     parser.add_argument("--seed", type=int, default=20260703)
     parser.add_argument("--plateau-quarter", type=int, default=5)
     parser.add_argument(
@@ -989,10 +1704,50 @@ def parse_args() -> argparse.Namespace:
         default="mixed",
         help="Software-engineering task context: mixed baseline, bounded enterprise tasks, or mature-codebase maintenance.",
     )
+    parser.add_argument(
+        "--adoption-propensity-concentration",
+        type=float,
+        default=24.0,
+        help="Beta-distribution concentration around each adopter group's adoption prior; lower values mean more person-to-person variation.",
+    )
+    parser.add_argument(
+        "--adoption-capability-elasticity",
+        type=float,
+        default=0.16,
+        help="Sensitivity of AI-use probability to capability above its baseline (a calibration scenario parameter).",
+    )
+    parser.add_argument(
+        "--improvement-base-probability",
+        type=float,
+        default=0.42,
+        help="Baseline chance that delivered AI use improves a task (a calibration scenario parameter).",
+    )
+    parser.add_argument(
+        "--improvement-capability-weight",
+        type=float,
+        default=0.20,
+        help="Additional improvement probability from model capability times work-type capability fit.",
+    )
+    parser.add_argument("--improvement-probability-min", type=float, default=0.05)
+    parser.add_argument("--improvement-probability-max", type=float, default=0.92)
+    parser.add_argument("--ai-gain-min", type=float, default=-0.25)
+    parser.add_argument("--ai-gain-max", type=float, default=2.0)
+    parser.add_argument(
+        "--zero-risk-feature-gain",
+        type=float,
+        default=0.01,
+        help="Deterministic per-employee efficiency gain from no-cost integrated AI features, scaled by the persona adoption-prior mean.",
+    )
     parser.add_argument("--max-monthly-service-budget", type=float, default=None)
     parser.add_argument("--max-upfront-hardware-budget", type=float, default=None)
     parser.add_argument("--max-monthly-service-budget-usd", type=float, default=None)
     parser.add_argument("--max-upfront-hardware-budget-usd", type=float, default=None)
+    parser.add_argument(
+        "--confidential-document-fraction",
+        type=float,
+        default=0.0,
+        help="Fraction of organization documents/workflows that must stay on-prem and cannot be served by cloud-only scenarios.",
+    )
     parser.add_argument(
         "--usd-per-service-cost-index-quarter",
         type=float,
@@ -1002,14 +1757,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--usd-per-hardware-capex-index",
         type=float,
-        default=USD_PER_HARDWARE_CAPEX_INDEX_DEFAULT,
-        help="Dollar calibration for one upfront hardware capex index unit. Defaults to the 10%% local deployment target anchor.",
+        default=None,
+        help="Dollar calibration for one upfront hardware capex index unit. Defaults to the selected hardware calibration anchor.",
+    )
+    parser.add_argument(
+        "--hardware-calibration",
+        choices=sorted(HARDWARE_CALIBRATIONS),
+        default="h100",
+        help="Hardware/model calibration profile for local on-prem runs.",
     )
     parser.add_argument(
         "--backend",
-        choices=["numpy", "torch-mps", "auto"],
-        default="numpy",
-        help="Simulation backend. torch-mps requires PyTorch with Apple MPS support.",
+        choices=["numpy", "numba", "torch-mps", "auto"],
+        default="auto",
+        help="Simulation backend. auto prefers numba, then torch-mps, then numpy.",
     )
     parser.add_argument("--output-dir", type=Path, default=Path("outputs"))
     return parser.parse_args()
@@ -1022,6 +1783,12 @@ def main() -> None:
         backend = _resolve_backend(args.backend)
     except RuntimeError as exc:
         raise SystemExit(str(exc)) from exc
+    calibration = _hardware_calibration_profile(args.hardware_calibration)
+    hardware_capex_index = (
+        args.usd_per_hardware_capex_index
+        if args.usd_per_hardware_capex_index is not None
+        else float(calibration["target_unit_usd"]) / HARDWARE_SCENARIOS["onprem_10pct_capacity"]["capex_units"]
+    )
 
     config = SimulationConfig(
         users=args.users,
@@ -1035,10 +1802,22 @@ def main() -> None:
         max_upfront_hardware_budget=args.max_upfront_hardware_budget,
         max_monthly_service_budget_usd=args.max_monthly_service_budget_usd,
         max_upfront_hardware_budget_usd=args.max_upfront_hardware_budget_usd,
+        confidential_document_fraction=args.confidential_document_fraction,
         usd_per_service_cost_index_quarter=args.usd_per_service_cost_index_quarter,
-        usd_per_hardware_capex_index=args.usd_per_hardware_capex_index,
+        usd_per_hardware_capex_index=hardware_capex_index,
+        hardware_calibration=args.hardware_calibration,
+        onprem_capability_multiplier=float(calibration["onprem_capability_multiplier"]),
         employee_mix=_parse_employee_mix(args.employee_mix),
         engineering_context=args.engineering_context,
+        adoption_propensity_concentration=args.adoption_propensity_concentration,
+        adoption_capability_elasticity=args.adoption_capability_elasticity,
+        improvement_base_probability=args.improvement_base_probability,
+        improvement_capability_weight=args.improvement_capability_weight,
+        improvement_probability_min=args.improvement_probability_min,
+        improvement_probability_max=args.improvement_probability_max,
+        ai_gain_min=args.ai_gain_min,
+        ai_gain_max=args.ai_gain_max,
+        zero_risk_feature_gain=args.zero_risk_feature_gain,
         backend=backend,
         output_dir=args.output_dir,
     )

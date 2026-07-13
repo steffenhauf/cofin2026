@@ -30,12 +30,20 @@ python simulate_llm_efficiency.py \
   --runs 1000 \
   --concurrency 4 \
   --employee-mix software_engineering=0.36,administration=0.44,manual_labor=0.20 \
+  --confidential-document-fraction 0.25 \
   --max-monthly-service-budget-usd 15000 \
   --max-upfront-hardware-budget-usd 775000 \
-  --backend numpy
+  --hardware-calibration h100 \
+  --backend auto
 ```
 
-Optional Apple GPU path, if PyTorch with MPS support is installed:
+Optional explicit backends:
+
+```bash
+python simulate_llm_efficiency.py \
+  --backend numba \
+  --runs 1000
+```
 
 ```bash
 python simulate_llm_efficiency.py \
@@ -49,11 +57,24 @@ Budget sweep wrapper:
 python sweep_budget_frontier.py \
   --years 3 \
   --runs 200 \
+  --backend auto \
+  --concurrency 4 \
+  --simulation-concurrency 2 \
+  --confidential-document-fraction 0.25 \
+  --hardware-calibration rtx6000-blackwell-gemma-moe-26b \
   --total-budget-usd 1200000 \
   --service-budget-max-usd 15000 \
   --service-budget-points 5 \
   --hardware-budget-max-usd 775000 \
   --hardware-budget-points 5
+```
+
+Replot existing sweep outputs without resimulating:
+
+```bash
+python sweep_budget_frontier.py \
+  --replot-only \
+  --output-dir budget_sweep_outputs
 ```
 
 Render the README to PDF with Mermaid support:
@@ -66,6 +87,19 @@ For wide Mermaid diagrams, the most useful options are:
 
 ```bash
 python render_readme_pdf.py --output README.pdf --landscape --diagram-scale 0.9
+```
+
+Render a concise explanation of one simulation period and the persona effects
+as a PNG:
+
+```bash
+python render_simulation_step_diagram.py --output simulation_step_and_persona.png
+```
+
+Render English and German input and static-persona-Markov variants together:
+
+```bash
+python render_simulation_step_diagram.py --all-variants --output-dir simulation_diagrams
 ```
 
 Outputs are written to `outputs/`:
@@ -86,8 +120,114 @@ The budget sweep wrapper writes:
 
 - `budget_frontier_selections.csv`
 - `budget_frontier_points.csv`
+- `budget_frontier_timeseries.csv`
 - `budget_frontier_grid.png`
+- `budget_frontier_grid_transposed.png`
 - `budget_frontier_contours.png`
+- `budget_frontier_contours_transposed.png`
+- `budget_frontier_timeseries.png`
+- `budget_frontier_timeseries_transposed.png`
+
+Portfolio return-rate-change sweep:
+
+```bash
+python sweep_portfolio_rate_changes.py \
+  --years 3 \
+  --resolution-months 3 \
+  --runs 100 \
+  --concurrency 4 \
+  --backend auto \
+  --output-dir portfolio_sweep_outputs
+```
+
+For a compact figure spanning one column of a two-column paper, add
+`--figure-width one-column`. This writes
+`portfolio_efficiency_risk_frontier_one_column.png` at 3.5 inches wide and
+300 DPI without replacing the standard plot.
+
+This local-only sweep uses representative company sizes of 5, 50, 100, 500, and
+2,500 employees; monthly service budgets of $5, $10, $25, and $50 per person;
+the six requested upfront hardware budgets; confidentiality shares from 0% to
+100%; and a separate 18-month capability-plateau versus continuous-growth run.
+It runs five outer company work-mix profiles into separate subfolders:
+`administration_heavy`, `mixed`, `manual_labor_heavy`,
+`software_engineering_heavy`, and `knowledge_worker_heavy`. Select a subset
+with `--company-profiles software_engineering_heavy,knowledge_worker_heavy`.
+For each configuration and time point it selects low-risk, balanced-optimum,
+and high-gain portfolios from the simulated efficient frontier. The two wide
+CSVs have the same columns:
+
+- `portfolio_rate_changes.csv`: median period-to-period return-rate change.
+- `portfolio_rate_change_risk.csv`: standard deviation of that change across
+  Monte Carlo runs.
+
+`portfolio_scenario_manifest.csv` documents each selected internal portfolio,
+including any necessary sigma-rule fallback. The sweep also writes
+`portfolio_month_by_month_grid.png` and an interactive
+`portfolio_risk_return_animation.html`.
+
+Each completed portfolio sweep also produces summary views from the selected
+portfolio manifest:
+
+- `portfolio_faceted_return_rate_timeseries.png`
+- `portfolio_faceted_risk_timeseries.png`
+- `portfolio_final_return_sensitivity.png`
+- `portfolio_final_risk_sensitivity.png`
+- `portfolio_plateau_comparison.png`
+
+It also writes a portfolio-theory view based on final-period per-employee
+efficiency gain: `portfolio_efficiency_risk_frontier.png`. It shows all
+simulated portfolios, their efficient frontier, the zero-cost integrated-AI
+feature baseline at zero risk, and the allocation line through the
+highest gain-per-unit-risk frontier point. Its source data are in
+`portfolio_efficiency_risk_points.csv`.
+
+`portfolio_efficiency_risk_frontier_by_asset_mix.png` is an additional view
+of the same assets: color encodes company size, while marker shape encodes
+the planned-spend mix over the simulation horizon. Hardware-heavy and
+service-heavy mean at least two thirds of total planned spend is respectively
+upfront hardware or monthly service; the remainder is mixed.
+
+`portfolio_efficiency_risk_frontier_by_size.png` shows a separate
+hyperbola-style efficient-frontier fit for each representative company size,
+using the same color for that size's asset markers and frontier curve.
+
+Regenerate all plots from an existing run without resimulating:
+
+```bash
+python sweep_portfolio_rate_changes.py --replot-only --output-dir full_sweep
+```
+
+Illustrative three-portfolio plot:
+
+```bash
+python plot_illustrative_portfolios.py --runs 200 --backend auto
+```
+
+Add `--figure-width one-column` to write a compact 3.5-inch-wide,
+300-DPI `illustrative_*_portfolio_return_rates_one_column.png` variant.
+
+The defaults plot the optimum risk-frontier return rate for full service
+($50/person/month, no hardware), full hardware ($1M upfront, no service), and
+mixed ($25/person/month, $500k upfront) configurations. They assume 25%
+confidential documents and a capability plateau after 24 months. All budgets,
+the plateau date, confidentiality share, company size, and simulation settings
+are configurable. The output includes P10–P90 bands and a CSV documenting the
+portfolio selected at the final quarter. That selected scenario is then held
+fixed while the plot shows its complete simulated time evolution.
+
+Choose a different frontier selection with `--frontier low-risk`,
+`--frontier optimum` (the default), or `--frontier high-return`.
+Use `--token-cost gradual_break_even` or `--token-cost sudden_break_even` to
+plot a frontier constrained to a rising-cost path; the default `auto` lets all
+token-cost paths compete.
+Use `--software-group` for a workforce mix of 90% software engineering and
+10% administration.
+Use `--highest-fluctuation` to select, for each illustrative category, the
+fixed scenario with the largest median within-run standard deviation of
+period-to-period return-rate changes. It overrides `--frontier`.
+The plot overlays five faint individual Monte Carlo paths per category by
+default; change this with `--individual-paths N` or set it to `0` to hide them.
 
 ## Metrics
 
@@ -117,15 +257,28 @@ Budget inputs can be given in either dollars or internal cost-index units:
 The USD inputs are converted into the internal cost-index scale using explicit calibration parameters:
 
 - `--usd-per-service-cost-index-quarter`, default `60.0`
-- `--usd-per-hardware-capex-index`, default about `41.20`
+- `--usd-per-hardware-capex-index`, default depends on `--hardware-calibration`
+- `--hardware-calibration`, default `h100`
 
-With the defaults:
+With the default `h100` calibration:
 
 - `1.0` service cost-index unit per active user per quarter corresponds to `$60`
-- `1.0` hardware capex index unit corresponds to about `$41.20`
-- the `onprem_10pct_capacity` scenario with `maxed_out` corresponds to about `$6,798` upfront
+- `1.0` hardware capex index unit corresponds to about `$181.82`
+- the `onprem_10pct_capacity` scenario with `maxed_out` corresponds to about `$30,000` upfront
+
+With `--hardware-calibration rtx6000-blackwell-gemma-moe-26b`:
+
+- `1.0` hardware capex index unit corresponds to about `$51.91`
+- the `onprem_10pct_capacity` scenario with `maxed_out` corresponds to about `$8,565` upfront
+- local on-prem capability is scaled to a `Gemma MoE 26B`-class model at `0.94x` the off-prem baseline capability used by the simulation
 
 The internal index scale remains the simulation's native accounting layer. The dollar inputs are a convenience mapping on top of it.
+
+Local hardware is selected from the discrete planning catalogue in
+`hardware_benchmarks.csv`. Its SLA-limited concurrent-user capacity is applied
+as an aggregate local-service cap rather than a soft capacity percentage. The
+assumptions, public source links, and update method are documented in
+`HARDWARE_BENCHMARKS.md`.
 
 The 3D plot uses:
 
@@ -155,21 +308,39 @@ The split uses the classic Rogers diffusion categories often applied in SME tech
 - late majority: 34%
 - laggards: 16%
 
-Each persona has different baseline adoption probability, task fit, usage intensity, and willingness to wait for on-prem hardware access.
+Each persona supplies an adoption-prior mean, usage intensity, and willingness to wait for on-prem hardware access. Individual adoption propensity is sampled from a beta distribution around that group mean. This represents a calibration prior, not a claim that any Rogers group has one measured adoption probability.
+
+Capability fit belongs to the work type rather than the adopter persona. It represents the share/suitability of that work for the model's effective capability frontier: administration is the reference fit, knowledge work and software engineering are somewhat lower in the mixed-context baseline, and manual labor is much lower. This follows evidence that generative-AI results vary by task, including potentially negative outcomes outside its effective frontier.
+
+The uncertain behavioral parameters are explicit simulation inputs:
+
+- `--adoption-propensity-concentration`: variation around each persona's adoption-prior mean.
+- `--adoption-capability-elasticity` (`βₐ`): capability sensitivity of AI use.
+- `--improvement-base-probability` (`pᵦ`): baseline probability that delivered use improves output.
+- `--improvement-capability-weight` (`βᵢ`): additional improvement probability from capability times work-type fit.
+- `--improvement-probability-min` / `--improvement-probability-max`: bounds on the sampled productive-outcome probability (defaults: 0.05 and 0.92).
+- `--ai-gain-min` / `--ai-gain-max`: bounds on the realized paid/local AI gain (defaults: -25% and +200%).
+- `--zero-risk-feature-gain`: deterministic no-incremental-cost efficiency gain from AI features embedded in ordinary software, scaled by each employee's persona adoption-prior mean.
+
+They should be varied in sensitivity runs or calibrated to organization-specific survey/use data; the defaults are illustrative priors.
+
+The zero-risk feature gain defaults to 1.0% before the persona scaling. It applies to every employee in every period without a service request, hardware use, or AI-specific cost. It is reported separately as `zero_risk_efficiency_gain`, while `mean_ai_efficiency_gain` reports the gain from the paid/local AI access path.
 
 ### Productivity Gains
 
-Three employee types are simulated:
+Four employee types are simulated:
 
 - software engineering, default share 36%
 - administration, default share 44%
 - manual labor, default share 20%
+- knowledge work, used by the company work-mix profiles
 
 Mean productivity gain assumptions are deliberately conservative for a toy model:
 
 - software engineering: mean gain 10.0%, with noise, as the mixed-context default
 - administration: mean gain 17.0%, with noise
 - manual labor: mean gain 2.0%, with noise, reflecting modest support for email and knowledge lookup rather than core work execution
+- knowledge work: mean gain 15.0%, with noise. This is a conservative blended-work assumption: professional writing experiments measured a 40% time reduction, while a large cross-industry field experiment found 25% less email time and more modest document-speed effects.
 
 The employee-type mix is configurable through `--employee-mix`.
 
@@ -185,10 +356,12 @@ The model samples realized gains around those means, then gates them through:
 
 - whether the user adopts the tool at that time point
 - whether the use actually improves output
-- the user's persona/task-fit multiplier
+- the work-type capability-fit multiplier
 - the model capability multiplier
 - waiting reduction if on-prem hardware capacity is constrained
 - waiting reduction if a flat-rate access window is exhausted and top-up is not enabled
+
+An employee who uses the paid/local AI path can also become less productive. The sampled AI gain is clipped to -25% through +200% by default; negative draws remain negative after use and delivery gates. `negative_ai_gain_share` records the employee share with a negative realized AI gain in each run and period.
 
 ### Model Capability Scenarios
 
@@ -196,8 +369,8 @@ Four model-access scenarios are included:
 
 - `frontier_growth`: frontier models continue to improve over the simulated period.
 - `frontier_plateau`: frontier models plateau after `--plateau-quarter`.
-- `oss_growth_lagged`: open-source models follow the growth path with a three-quarter lag and lower starting capability.
-- `oss_plateau_lagged`: open-source models follow the plateau behavior with the same lag.
+- `oss_growth_lagged`: open-source models use the frontier capability available 12 months earlier.
+- `oss_plateau_lagged`: open-source models use the plateau path available 12 months earlier.
 
 The default quarterly frontier capability improvement is 8.5%, capped at 2.6x. That is a stylized assumption, not a forecast.
 
@@ -219,21 +392,74 @@ Three access plans are simulated:
 - `flatrate_limited`: active users pay a fixed flat-rate cost-index charge, but usage is capped by both a 5-hour-window allowance and a weekly allowance. If either allowance is exhausted, the excess requested usage is lost to waiting until the window resets.
 - `flatrate_limited_topup`: same flat-rate limits, but excess requested usage is restored through top-up usage charged at the same pay-per-use token cost as the active token-cost scenario.
 
-The access-limit model is aggregate and normalized to the simulation time step. It does not simulate exact message timestamps inside each 5-hour or weekly window. The output CSVs include `delivered_usage_share`, `rate_limit_exhausted_share`, and `topup_cost_index`.
+The access-limit model is aggregate and normalized to the simulation time step. It does not simulate exact message timestamps inside each 5-hour or weekly window. Service access is applied to non-confidential frontier usage first. The output CSVs include `delivered_usage_share`, `rate_limit_exhausted_share`, and `topup_cost_index`.
+
+Local-capable scenarios are simulated with two fallback policies:
+
+- `persona_choice`: when service budget or service access does not cover all non-confidential work, the unserved remainder can fall back to local hardware only for a persona-dependent fraction of users. That fraction is based on the user's `wait_tolerance`, so innovators and early adopters accept fallback more readily than late majority users or laggards.
+- `local_default`: when service budget or service access does not cover all non-confidential work, the unserved remainder defaults to local hardware for all users, subject only to funded hardware capacity and local queueing.
+
+The scenario label appends the fallback policy as a final pipe-delimited field, and the CSV outputs include it separately as `local_fallback`.
 
 ### Budget Constraints
 
 Two optional budget controls are available:
 
 - `--max-monthly-service-budget-usd`: caps service spending per calendar month in USD. The simulator converts that to the internal time-step budget, and if projected service spend exceeds it, delivered service usage is scaled down proportionally.
-- `--max-upfront-hardware-budget-usd`: caps upfront hardware purchase cost in USD. If a hardware scenario exceeds this cap after conversion into the internal scale, the local-hardware effect is removed for that scenario and no hardware cost is applied.
+- `--max-upfront-hardware-budget-usd`: caps upfront hardware purchase cost in USD. The simulator converts that to the internal scale and uses it as a partial-funding control for local hardware. If the budget only covers part of a local scenario, the model scales hardware cost, waiting relief, and refresh-related capability bonus proportionally instead of treating hardware as strictly on or off.
 
 For direct control of the internal accounting layer, the index-unit versions remain available:
 
 - `--max-monthly-service-budget`
 - `--max-upfront-hardware-budget`
 
-The output CSVs include `service_budget_scale` and `hardware_budget_feasible` so you can see when a budget limit binds.
+If `--usd-per-hardware-capex-index` is passed explicitly, it overrides the dollar anchor implied by `--hardware-calibration`, but the local-model capability multiplier from the selected hardware calibration still applies.
+
+### Confidential Work
+
+`--confidential-document-fraction` sets the fraction of organizational documents or workflows that must remain on-prem.
+
+- `0.0`: no confidentiality constraint; all work can be served by cloud-only scenarios.
+- `1.0`: all work must be served by local hardware.
+- `0.0 < x < 1.0`: demand is split between confidential local-only work and non-confidential work.
+
+The simulator applies this as a demand-routing constraint:
+
+- cloud-only scenarios lose the confidential share completely
+- local-capable scenarios can serve the confidential share only in proportion to funded local hardware and local queueing
+- non-confidential work is served by frontier service access first, then any unserved remainder may fall back to local hardware according to the scenario's `local_fallback` policy
+
+The output CSVs include:
+
+- `confidential_usage_share`, which reports the requested confidential share of total organizational demand
+- `delivered_usage_share`, the served share of total requested work
+- `unserved_work_share`, computed in the sweep selections as `1 - delivered_usage_share`
+
+The budget sweep plots now show five metrics for both `low_risk` and `high_return` frontier picks:
+
+- `return_rate_adjusted_mean`, computed as `return_rate_mean * delivered_usage_share_mean`
+- `risk_mean`
+- `mean_efficiency_gain_mean`
+- `delivered_usage_share_mean`
+- `unserved_work_share_mean`
+
+Both the grid and contour versions are written in two layouts:
+
+- wide: selections as rows, metrics as columns
+- transposed: metrics as rows, selections as columns
+
+The sweep also writes frontier timeseries spread plots. These pool the full monthly histories of every scenario that lands on a final efficient frontier across the simulated budget pairs, and show:
+
+- full min-max spread
+- inner p10-p90 spread
+- the median as the highlighted center line
+
+The output CSVs include:
+
+- `service_budget_scale`: the delivered-service scaling imposed by the service cap.
+- `hardware_budget_scale`: the share of the target local hardware scenario that the available hardware budget can fund, from `0.0` to `1.0`.
+- `hardware_budget_feasible`: `1.0` only when the full local scenario is affordable, otherwise `0.0`.
+- `local_fallback`: whether unserved non-confidential work falls back to local hardware by persona choice or by local-default routing.
 
 For the budget sweep wrapper, the total-budget filter is:
 
@@ -258,6 +484,17 @@ Hardware is amortized over 36 months. Two refresh behaviors are included:
 - `maxed_out`: hardware is used as bought.
 - `follow_each_generation`: higher capex, with a small capability bonus.
 
+Hardware budget now affects local scenarios continuously:
+
+- `hardware_budget_scale = 0.0`: no local hardware is funded, so the scenario behaves like the cloud baseline for waiting and receives no refresh bonus.
+- `0.0 < hardware_budget_scale < 1.0`: the model buys a fraction of the target local setup, pays the corresponding amortized cost share, blends in the local waiting effect, and blends in the refresh capability bonus.
+- `hardware_budget_scale = 1.0`: the full local scenario is funded.
+
+Hardware calibration profiles also control the assumed local-model quality:
+
+- `h100`: keeps on-prem capability aligned with the simulation baseline.
+- `rtx6000-blackwell-gemma-moe-26b`: uses an RTX 6000 Blackwell dollar anchor and scales local on-prem capability to a `Gemma MoE 26B`-class model relative to the off-prem baseline.
+
 The simulation assumes perfect IT setup: no integration losses, security overhead, downtime, networking bottlenecks, or staff cost.
 
 ## Source Anchors
@@ -268,6 +505,7 @@ Productivity:
 
 - Brynjolfsson, Li, and Raymond, "Generative AI at Work", NBER Working Paper 31161, 2023. Finds average productivity gains around 14% for customer-support agents, with larger gains for less-experienced workers. https://www.nber.org/papers/w31161
 - Noy and Zhang, "Experimental Evidence on the Productivity Effects of Generative Artificial Intelligence", Science, 2023. Finds large time savings and quality improvements in professional writing tasks. https://www.science.org/doi/10.1126/science.adh2586
+- Dillon et al., "Shifting Work Patterns with Generative AI", 2025. A randomized field experiment across firms found 25% less time spent on email among workers who used the tool, with more modest document-speed effects. https://www.microsoft.com/en-us/research/publication/shifting-work-patterns-with-generative-ai/
 - Paradis et al., "How much does AI impact development speed? An enterprise-based randomized controlled trial", 2024. Reports an estimated 21% reduction in time-on-task for Google software engineers in a bounded enterprise setting, with wide uncertainty. https://arxiv.org/abs/2410.12944
 - Becker et al., "Measuring the Impact of Early-2025 AI on Experienced Open-Source Developer Productivity", 2025. Reports a 19% slowdown for experienced developers in mature open-source codebases. https://arxiv.org/abs/2507.09089
 - Freeman et al., "Evaluation of Task Specific Productivity Improvements Using a Generative Artificial Intelligence Personal Assistant Tool", 2024. Reports office-task improvements ranging from 3.3% to 69%, strongest for summarization and instructions. https://arxiv.org/abs/2409.14511
@@ -276,115 +514,89 @@ Productivity:
 Adoption:
 
 - Rogers, "Diffusion of Innovations", 5th edition, 2003. Source of the canonical adopter split used as the persona baseline.
+- Davis, Bagozzi, and Warshaw, "User Acceptance of Computer Technology", 1989. The Technology Acceptance Model motivates separating user adoption propensity from perceived usefulness and ease/access; it does not identify the simulator's numeric coefficients. https://doi.org/10.1287/mnsc.35.8.982
+- Dell'Acqua et al., "Navigating the Jagged Technological Frontier", 2023. Experimental evidence that AI can improve some tasks and worsen others within a workflow; this motivates work-type capability fit and sensitivity analysis rather than a universal gain probability. https://doi.org/10.1287/orsc.2025.21838
 - European Commission SME digitalisation reporting, including DESI/Digital Decade and SME digital intensity discussions, provides the European SME context but not a stable one-to-one split for these personas. The simulator therefore uses the Rogers split as the documented diffusion proxy.
 
 Costs and hardware:
 
 - NVIDIA H100, H200, and Blackwell/B200 product specifications are used as public anchors for the hardware generation assumptions. https://www.nvidia.com/en-us/data-center/
 - Public cloud/API market reporting and provider pricing discussions through 2024-2026 motivate the flat, gradual break-even, and sudden break-even token-cost scenarios. The simulation intentionally keeps these as normalized cost-index paths instead of exact provider economics.
-- The default hardware dollar calibration is anchored to the `onprem_10pct_capacity` scenario and an inferred RTX 6000 Ada price of about `$6,798`. This is inferred from Tom's Hardware reporting on March 22, 2025 that the RTX Pro 6000 Blackwell was listed at `$8,565`, which was `26%` more than the RTX 6000 Ada. https://www.tomshardware.com/pc-components/gpus/nvidia-rtx-pro-6000-blackwell-gpu-is-listed-for-usd8-565-at-us-retailer-26-percent-more-expensive-than-the-last-gen-rtx-6000-ada
+- The default hardware dollar calibration is anchored to the `onprem_10pct_capacity` scenario and a flat H100 assumption of `$30,000` per target unit. This is a modeling anchor for budget translation, not a claim about current contract pricing.
+- The alternate `rtx6000-blackwell-gemma-moe-26b` profile uses a flat RTX 6000 Blackwell anchor of `$8,565` and a local capability multiplier of `0.94x` to represent a `Gemma MoE 26B`-class on-prem model relative to the off-prem baseline. The `0.94x` figure is an explicit modeling assumption for this simulator, not a benchmark claim.
 
 ## Simulation Flow
 
-Compact view of one employee-level Monte Carlo step:
+The simulation combines budget selection, employee-level Monte Carlo sampling,
+and a risk/return portfolio selection:
 
 ```mermaid
 flowchart TD
-    A[Start Monte Carlo step] --> B[Sample one employee]
-    B --> C[Assign persona and employee type<br/>software engineering<br/>administration<br/>manual labor]
-    C --> D[Load timepoint scenario context<br/>model capability<br/>cost regime<br/>access plan<br/>budget state]
-    D --> E[Compute persona-adjusted inputs<br/>adoption probability<br/>usage intensity<br/>task fit<br/>wait tolerance]
-    E --> F{Uses LLM this step?}
-    F -- No --> G[Baseline work output<br/>no LLM gain<br/>no LLM cost]
-    F -- Yes --> H[Check LLM access path<br/>service or local]
-    H --> I{Budget-feasible and available?}
-    I -- No --> J[Usage reduced or blocked<br/>service budget cap<br/>or hardware budget block]
-    I -- Yes --> K[LLM interaction proceeds]
-    J --> L{Improvement occurs?}
-    K --> L
-    L -- No --> M[LLM used<br/>no realized efficiency gain]
-    L -- Yes --> N[Sample realized gain<br/>scaled by task fit and access delivered]
-    M --> O[Apply cost and efficiency update]
-    N --> O
-    G --> O
-    O --> P[Add employee contribution<br/>to period totals]
+    A[Choose company, service budget,<br/>hardware budget, confidentiality and capability path]
+    A --> B[Select local hardware tier and replicas<br/>or cloud-only]
+    B --> C[Run Monte Carlo scenarios<br/>over employees and time periods]
+    C --> D[Summarize return-rate changes and risk]
+    D --> E[Find efficient frontier]
+    E --> F[Select low-risk, optimum<br/>and high-return portfolios]
+    F --> G[Write CSVs and plots]
 ```
 
-Hidden Markov view of the latent employee state that drives the persona-adjusted inputs:
+One period of one Monte Carlo run:
 
 ```mermaid
 flowchart LR
-    A[Previous latent employee state<br/>engagement with LLMs<br/>trust<br/>workflow fit<br/>usage habit] --> B[Transition model]
-    B --> C{Current latent state}
-
-    C --> C1[High-engagement state<br/>high trust<br/>high usage intensity<br/>high task-fit realization]
-    C --> C2[Pragmatic state<br/>selective use<br/>moderate usage intensity<br/>task-dependent fit]
-    C --> C3[Constrained state<br/>budget pressure<br/>rate-limit friction<br/>hardware waiting]
-    C --> C4[Low-adoption state<br/>low trust<br/>low usage intensity<br/>minimal fit realization]
-
-    D[Observed employee attributes<br/>persona<br/>employee type<br/>timepoint scenario<br/>budget regime] --> E[Emission model]
-    C1 --> E
-    C2 --> E
-    C3 --> E
-    C4 --> E
-
-    E --> F[Persona-adjusted inputs emitted for this step<br/>adoption probability<br/>usage intensity<br/>task fit<br/>wait tolerance]
-    F --> G[LLM use and gain sampling]
+    A[Sample employees<br/>persona and work type] --> B[Calculate adoption and requested usage]
+    B --> C[Split requested work<br/>confidential and non-confidential]
+    C --> D{Access path}
+    D --> E[Cloud service<br/>access plan and service budget]
+    D --> F[Local hardware<br/>replica capacity and concurrent-user cap]
+    E --> G[Delivered usage]
+    F --> G
+    G --> H[Draw AI outcome and realized efficiency gain<br/>which may be negative]
+    H --> I[Add cloud and amortized hardware cost]
+    I --> J[Update return rate and change volatility]
 ```
 
-Detailed view including access-plan and hardware branches:
+Persona- and work-type-conditioned sampling path for one employee. Symbols are calibration variables, not measured constants:
 
 ```mermaid
-flowchart TD
-    A[Start period-step for one run] --> B[Sample employee]
-    B --> C[Draw persona<br/>innovator or early adopter or early majority or late majority or laggard]
-    C --> D[Draw employee type<br/>software engineering or administration or manual labor]
-    D --> E[Read scenario state at this timepoint<br/>model capability<br/>token cost regime<br/>access plan<br/>hardware scenario<br/>refresh mode<br/>USD and index budget caps]
-    E --> F[Compute employee parameters<br/>adoption probability<br/>task fit<br/>usage intensity<br/>wait tolerance]
-    F --> G{Adopts and attempts LLM use?}
-    G -- No --> H[Set active = false<br/>requested usage = 0<br/>realized gain = 0]
-    G -- Yes --> I[Set active = true<br/>requested usage from usage intensity]
-    I --> I1[Convert dollar budget inputs into<br/>internal cost-index budgets]
-    I --> J{LLM access type}
-    J -- Service LLM --> K[Apply access plan<br/>pay per use or flat-rate limited or flat-rate limited with top-up]
-    J -- Local LLM --> L{Hardware budget feasible?}
-    L -- No --> L1[Mark budget-blocked local<br/>remove hardware effect]
-    L -- Yes --> L2[Apply hardware waiting effect<br/>from capacity and utilization]
-    L1 --> M{Also service top-up needed?}
-    L2 --> M{Also service top-up needed?}
-    M -- No --> N[Delivered local usage after waiting]
-    M -- Yes --> O[Combine local usage and service top-up usage]
-    K --> P{Rate limit exceeded?}
-    P -- No --> Q[Delivered service usage = requested usage]
-    P -- Yes --> R{Top-up allowed?}
-    R -- No --> S[Delivered usage reduced<br/>employee waits for reset window]
-    R -- Yes --> T[Delivered usage restored<br/>top-up cost added]
-    N --> U[Compute delivered usage share]
-    O --> U
-    Q --> U
-    S --> U
-    T --> U
-    U --> U1{Service budget exceeded?}
-    U1 -- No --> U2[Keep delivered service usage]
-    U1 -- Yes --> U3[Scale delivered service usage down<br/>to budget cap]
-    H --> V[Improvement probability from<br/>capability x task fit]
-    U --> V
-    U2 --> V
-    U3 --> V
-    V --> W{Improvement occurs?}
-    W -- No --> X[Realized gain = 0<br/>but usage cost may still apply]
-    W -- Yes --> Y[Sample gain from employee-type distribution<br/>then scale by capability<br/>task fit<br/>access reduction]
-    X --> Z[Compute employee cost<br/>cloud cost<br/>top-up cost<br/>hardware amortization share]
-    Y --> Z
-    Z --> AA[Update employee efficiency index<br/>and budget binding indicators]
-    AA --> AB[Add employee result to run-period aggregates<br/>return rate input<br/>cost input<br/>risk time series input<br/>service_budget_scale<br/>hardware_budget_feasible]
+stateDiagram-v2
+    [*] --> SampledEmployee: sample persona and work type
+    SampledEmployee: p₀ = sampled adoption propensity
+    SampledEmployee: u = usage intensity; w = wait tolerance
+    SampledEmployee: f = work-type capability fit
+
+    SampledEmployee --> NoUse: no use
+    SampledEmployee --> RequestsAI: use AI
+    note right of SampledEmployee
+      P(use) = clip(p₀ ×
+      [1 + βₐ × (capability − 1)])
+    end note
+
+    NoUse --> [*]: baseline output; no AI gain or cost
+    RequestsAI --> AccessCheck
+    AccessCheck --> ReducedAccess: budget or capacity binds
+    AccessCheck --> DeliveredAccess: access delivered
+    ReducedAccess --> BenefitDraw
+    DeliveredAccess --> BenefitDraw
+
+    BenefitDraw --> NoBenefit: no improvement
+    BenefitDraw --> Benefit: realized AI outcome
+    note right of BenefitDraw
+      P(improvement) = clip(pᵦ +
+      βᵢ × capability × work-type fit f)
+    end note
+
+    NoBenefit --> [*]: cost may apply; AI gain = 0
+    Benefit --> [*]: sample gain (may be negative); scale by capability,
+      work-type fit and delivered usage
 ```
 
 ## Implementation Notes
 
 - The default simulation backend is vectorized NumPy across users and periods.
 - `--backend torch-mps` uses PyTorch tensors on Apple Metal/MPS for the inner Monte Carlo arrays. It requires `torch` and fails clearly if MPS is unavailable.
-- `--backend auto` uses PyTorch/MPS when available and falls back to NumPy otherwise.
+- `--backend auto` prefers Numba, then PyTorch/MPS, then NumPy.
 - Scenario-level parallelism uses `ThreadPoolExecutor` and is controlled by `--concurrency`. This avoids macOS sandbox semaphore limits while still helping because the numerical work is mostly NumPy-backed.
 - `tqdm` reports scenario-level progress during simulation.
 - The GPU path is optional. It may only be faster for larger run counts because the simulation still emits pandas rows and writes CPU-side CSV/plot artifacts.
@@ -396,7 +608,7 @@ flowchart TD
 
 - This is a toy model. The parameters are plausible ranges, not calibrated estimates.
 - "Revenue" is expressed as efficiency return per cost-index unit, not money.
-- Budget caps are stylized controls, not a treasury model. Service budget pressure is applied as proportional usage reduction, and hardware budget pressure is applied as scenario feasibility.
+- Budget caps are stylized controls, not a treasury model. Service budget pressure is applied as proportional usage reduction, and hardware budget pressure is applied as partial local-hardware funding rather than a strict on/off switch.
 - The on-prem model excludes installation, staffing, power, cooling, downtime, procurement lead time, and security review.
 - Adoption behavior is stylized and should be treated as scenario logic, not empirical prediction.
-- The open-source lag is fixed at three quarters by default. That can be changed in code if needed.
+- The open-source capability baseline is fixed at the frontier capability from 12 calendar months earlier. Hardware, access, and persona effects are applied separately when calculating realized returns.
