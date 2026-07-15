@@ -572,7 +572,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--confidential-document-fraction", type=float, default=0.0)
     parser.add_argument("--usd-per-service-cost-index-quarter", type=float, default=60.0)
     parser.add_argument("--usd-per-hardware-capex-index", type=float, default=None)
-    parser.add_argument("--hardware-calibration", choices=sorted(HARDWARE_CALIBRATIONS), default="h100")
+    parser.add_argument("--hardware-calibration", choices=sorted(HARDWARE_CALIBRATIONS), default="h100-gemma4-31b")
     parser.add_argument("--output-dir", type=Path, default=Path("budget_sweep_outputs"))
     return parser.parse_args()
 

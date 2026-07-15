@@ -72,13 +72,23 @@ DEFAULT_EMPLOYEE_TYPES = pd.DataFrame(
             "mean_gain": 0.10,
             "sigma": 0.060,
             "capability_fit": 0.85,
+            "frontier_quality_work_share": 0.55,
         },
         {
             "task": "administration",
-            "share": 0.44,
+            "share": 0.34,
             "mean_gain": 0.17,
             "sigma": 0.080,
             "capability_fit": 1.00,
+            "frontier_quality_work_share": 0.70,
+        },
+        {
+            "task": "creative_work",
+            "share": 0.10,
+            "mean_gain": 0.10,
+            "sigma": 0.120,
+            "capability_fit": 0.90,
+            "frontier_quality_work_share": 0.70,
         },
         {
             "task": "manual_labor",
@@ -86,6 +96,7 @@ DEFAULT_EMPLOYEE_TYPES = pd.DataFrame(
             "mean_gain": 0.020,
             "sigma": 0.020,
             "capability_fit": 0.25,
+            "frontier_quality_work_share": 0.15,
         },
         {
             "task": "knowledge_work",
@@ -93,6 +104,7 @@ DEFAULT_EMPLOYEE_TYPES = pd.DataFrame(
             "mean_gain": 0.15,
             "sigma": 0.090,
             "capability_fit": 0.90,
+            "frontier_quality_work_share": 0.60,
         },
     ]
 )
@@ -106,8 +118,31 @@ ENGINEERING_CONTEXT_MULTIPLIERS = {
 MODEL_SCENARIOS = {
     "frontier_growth": {"kind": "frontier", "growth": True, "lag_months": 0},
     "frontier_plateau": {"kind": "frontier", "growth": False, "lag_months": 0},
-    "oss_growth_lagged": {"kind": "oss", "growth": True, "lag_months": 12},
-    "oss_plateau_lagged": {"kind": "oss", "growth": False, "lag_months": 12},
+    "oss_growth_lagged": {"kind": "oss", "growth": True, "lag_months": 4},
+    "oss_plateau_lagged": {"kind": "oss", "growth": False, "lag_months": 4},
+}
+
+SERVICE_PROVIDERS = {
+    "global_service": {
+        "capability_lag_months": 0,
+        "embargo_affected": True,
+        "confidential_capacity_share": 0.0,
+    },
+    "european_service": {
+        "capability_lag_months": 9,
+        "embargo_affected": False,
+        "confidential_capacity_share": 1.0,
+    },
+    "local_hardware": {
+        "capability_lag_months": 0,
+        "embargo_affected": False,
+        "confidential_capacity_share": 0.0,
+    },
+    "eu_cloud_oss": {
+        "capability_lag_months": 0,
+        "embargo_affected": False,
+        "confidential_capacity_share": 0.5,
+    },
 }
 
 TOKEN_SCENARIOS = {
@@ -145,6 +180,7 @@ HARDWARE_SCENARIOS = {
     "onprem_50pct_capacity": {"capacity": 0.50, "utilization": 1.0, "capex_units": 610.0},
     "onprem_full_capacity": {"capacity": 1.00, "utilization": 1.0, "capex_units": 1120.0},
     "onprem_low_30pct_utilization": {"capacity": 1.00, "utilization": 0.30, "capex_units": 1120.0},
+    "cloud_oss": {"capacity": 1.00, "utilization": 1.0, "capex_units": 0.0},
 }
 
 HARDWARE_REFRESH = {
@@ -152,36 +188,43 @@ HARDWARE_REFRESH = {
     "follow_each_generation": {"refresh_factor": 1.45, "capability_bonus": 1.08},
 }
 
-H100_TARGET_USD = 30000.0
-RTX_6000_BLACKWELL_TARGET_USD = 8565.0
 HARDWARE_CALIBRATIONS = {
-    "h100": {
-        "target_unit_usd": H100_TARGET_USD,
-        "onprem_capability_multiplier": 1.0,
-        "onprem_model_label": "H100-class local model",
+    "rtx6000-ada-gemma4-12b": {
+        "target_unit_usd": 8500.0,
+        "onprem_capability_multiplier": 0.88,
+        "frontier_quality_work_share_multiplier": 0.0,
+        "onprem_model_label": "Gemma 4 12B local model",
     },
-    "rtx6000-blackwell-gemma-moe-26b": {
-        "target_unit_usd": RTX_6000_BLACKWELL_TARGET_USD,
+    "rtx6000-pro-gemma4-26b-moe": {
+        "target_unit_usd": 14500.0,
         "onprem_capability_multiplier": 0.94,
-        "onprem_model_label": "Gemma MoE 26B-class local model",
+        "frontier_quality_work_share_multiplier": 1.0,
+        "onprem_model_label": "Gemma 4 26B MoE local model",
     },
-    "b100": {
-        "target_unit_usd": 60000.0,
-        "onprem_capability_multiplier": 1.0,
-        "onprem_model_label": "B100-class local model",
+    "h100-gemma4-31b": {
+        "target_unit_usd": 380000.0,
+        "onprem_capability_multiplier": 0.97,
+        "frontier_quality_work_share_multiplier": 1.0,
+        "onprem_model_label": "Gemma 4 31B local model",
     },
-    "nvl72": {
-        "target_unit_usd": 3100000.0,
-        "onprem_capability_multiplier": 1.0,
-        "onprem_model_label": "GB200 NVL72-class local model",
+    "b200-gemma4-31b": {
+        "target_unit_usd": 750000.0,
+        "onprem_capability_multiplier": 0.97,
+        "frontier_quality_work_share_multiplier": 1.0,
+        "onprem_model_label": "Gemma 4 31B local model",
     },
 }
 HARDWARE_BENCHMARKS_PATH = Path(__file__).with_name("hardware_benchmarks.csv")
 _HARDWARE_BENCHMARKS: pd.DataFrame | None = None
 USD_PER_HARDWARE_CAPEX_INDEX_DEFAULT = (
-    HARDWARE_CALIBRATIONS["h100"]["target_unit_usd"] / HARDWARE_SCENARIOS["onprem_10pct_capacity"]["capex_units"]
+    HARDWARE_CALIBRATIONS["h100-gemma4-31b"]["target_unit_usd"] / HARDWARE_SCENARIOS["onprem_10pct_capacity"]["capex_units"]
 )
 DEFAULT_CONCURRENCY = max(1, os.cpu_count() or 1)
+# TVöD Bund E 12, step 3, from May 2026; employer-cost uplift is an explicit estimate.
+TVOD_E12_STEP3_MONTHLY_GROSS_EUR = 5359.50
+IT_EMPLOYER_COST_FACTOR = 1.25
+IT_SUPPORT_FTE = 0.5
+IT_SUPPORT_MONTHLY_COST_EUR = TVOD_E12_STEP3_MONTHLY_GROSS_EUR * IT_EMPLOYER_COST_FACTOR * IT_SUPPORT_FTE
 
 _NUMBA_MODULE = None
 _NUMBA_IMPORT_ATTEMPTED = False
@@ -204,7 +247,7 @@ class SimulationConfig:
     confidential_document_fraction: float = 0.0
     usd_per_service_cost_index_quarter: float = 60.0
     usd_per_hardware_capex_index: float = USD_PER_HARDWARE_CAPEX_INDEX_DEFAULT
-    hardware_calibration: str = "h100"
+    hardware_calibration: str = "h100-gemma4-31b"
     onprem_capability_multiplier: float = 1.0
     employee_mix: dict[str, float] | None = None
     engineering_context: str = "mixed"
@@ -217,6 +260,14 @@ class SimulationConfig:
     ai_gain_min: float = -0.25
     ai_gain_max: float = 2.0
     zero_risk_feature_gain: float = 0.005
+    embargo_shock_probability: float = 0.05
+    embargo_rollback_months: int = 6
+    confidential_mixing_ratio: float = 0.5
+    confidential_mixing_penalty: float = 0.5
+    cloud_oss_hours_per_usage_unit_period: float | None = None
+    it_support_enabled: bool = True
+    it_support_max_users: int = 50
+    it_support_monthly_cost_eur: float = IT_SUPPORT_MONTHLY_COST_EUR
     backend: str = "numpy"
     show_progress: bool = True
     output_dir: Path = Path("outputs")
@@ -296,13 +347,13 @@ def _hardware_benchmark_row(hardware_calibration: str, hardware_name: str) -> pd
 
 
 def hardware_purchase_cost_usd(hardware_calibration: str, hardware_name: str) -> float:
-    if hardware_name == "cloud_api_only":
+    if hardware_name in ("cloud_api_only", "cloud_oss"):
         return 0.0
     return float(_hardware_benchmark_row(hardware_calibration, hardware_name)["purchase_cost_usd"])
 
 
 def _hardware_replica_count(config: SimulationConfig, hardware_name: str) -> tuple[int, float]:
-    if hardware_name == "cloud_api_only" or config.max_upfront_hardware_budget_usd is None:
+    if hardware_name in ("cloud_api_only", "cloud_oss") or config.max_upfront_hardware_budget_usd is None:
         return 1, 1.0
     unit_cost_usd = hardware_purchase_cost_usd(config.hardware_calibration, hardware_name)
     replicas = int(config.max_upfront_hardware_budget_usd // unit_cost_usd)
@@ -329,6 +380,7 @@ def _sample_users(rng: np.random.Generator, users: int, config: SimulationConfig
             "capability_fit": tasks.iloc[task_idx]["capability_fit"].to_numpy(float),
             "mean_gain": tasks.iloc[task_idx]["mean_gain"].to_numpy(float),
             "sigma": tasks.iloc[task_idx]["sigma"].to_numpy(float),
+            "frontier_quality_work_share": tasks.iloc[task_idx]["frontier_quality_work_share"].to_numpy(float),
         }
     )
     concentration = config.adoption_propensity_concentration
@@ -349,15 +401,46 @@ def _user_vectors(users_df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.nd
     )
 
 
-def _capability_multiplier(period: int, model_name: str, plateau_quarter: int, resolution_months: int) -> float:
+def _capability_multiplier(
+    period: int,
+    model_name: str,
+    plateau_quarter: int,
+    resolution_months: int,
+    capability_lag_months: float = 0.0,
+) -> float:
     model = MODEL_SCENARIOS[model_name]
-    effective_period = max(0.0, period - model["lag_months"] / resolution_months)
+    effective_period = max(
+        0.0,
+        (period * resolution_months - model["lag_months"] - capability_lag_months) / 3.0,
+    )
     if not model["growth"]:
         effective_period = min(effective_period, plateau_quarter)
 
     quarterly_growth = 1.085
     multiplier = quarterly_growth**effective_period
     return min(multiplier, 2.60)
+
+
+def _service_capability_multiplier(
+    period: int,
+    model_name: str,
+    provider_name: str,
+    plateau_quarter: int,
+    resolution_months: int,
+    embargo_shock: bool,
+    config: SimulationConfig,
+) -> float:
+    provider = SERVICE_PROVIDERS[provider_name]
+    lag_months = provider["capability_lag_months"]
+    if embargo_shock and provider["embargo_affected"]:
+        lag_months += config.embargo_rollback_months
+    return _capability_multiplier(
+        period,
+        model_name,
+        plateau_quarter,
+        resolution_months,
+        lag_months,
+    )
 
 
 def _token_cost_multiplier(period: int, token_scenario: str, periods: int) -> float:
@@ -368,6 +451,15 @@ def _token_cost_multiplier(period: int, token_scenario: str, periods: int) -> fl
     if token_scenario == "sudden":
         return 1.0 if period < max(1, periods // 3) else 1.85
     raise ValueError(f"Unknown token scenario: {token_scenario}")
+
+
+def _it_support_cost_index(hardware_name: str, config: SimulationConfig) -> float:
+    if not config.it_support_enabled or hardware_name not in ("onprem_10pct_capacity", "onprem_50pct_capacity", "onprem_full_capacity", "onprem_low_30pct_utilization", "cloud_oss"):
+        return 0.0
+    if config.users > config.it_support_max_users:
+        return 0.0
+    monthly_cost = config.it_support_monthly_cost_eur * config.resolution_months
+    return float(monthly_cost / config.usd_per_service_cost_index_quarter)
 
 
 def _hardware_adjustments(
@@ -384,9 +476,10 @@ def _hardware_adjustments(
         if benchmark is not None
         else 0.0
     )
+    it_support_cost = _it_support_cost_index(hardware_name, config)
     hardware_budget_feasible = 1.0 if hardware_budget_scale >= 0.999999 else 0.0
-    if hardware_name == "cloud_api_only":
-        return np.ones(len(users_df)), 0.0, hardware_budget_feasible, hardware_budget_scale, 1.0
+    if hardware_name in ("cloud_api_only", "cloud_oss"):
+        return np.ones(len(users_df)), it_support_cost, hardware_budget_feasible, hardware_budget_scale, 1.0
 
     available_slots = float(benchmark["max_concurrent_users"]) * replicas * hardware_budget_scale
     if available_slots <= 0.0:
@@ -396,7 +489,7 @@ def _hardware_adjustments(
     use_multiplier = np.minimum(1.0, available_slots * priority / max(1e-9, float(priority.sum())))
 
     amortization_periods = max(1.0, 36 / config.resolution_months)
-    hardware_cost = upfront_hardware_cost * hardware_budget_scale / amortization_periods
+    hardware_cost = upfront_hardware_cost * hardware_budget_scale / amortization_periods + it_support_cost
     hardware_bonus = 1.0 + (refresh["capability_bonus"] - 1.0) * hardware_budget_scale
     return (
         np.clip(use_multiplier, 0.0, 1.0),
@@ -405,6 +498,43 @@ def _hardware_adjustments(
         hardware_budget_scale,
         hardware_bonus,
     )
+
+
+def _user_effective_capability(
+    capability: float,
+    users_df: pd.DataFrame,
+    hardware_name: str,
+    config: SimulationConfig,
+) -> np.ndarray:
+    if hardware_name == "cloud_api_only":
+        return np.full(len(users_df), capability)
+    calibration = _hardware_calibration_profile(config.hardware_calibration)
+    local_multiplier = float(calibration["onprem_capability_multiplier"])
+    frontier_share = (
+        users_df["frontier_quality_work_share"].to_numpy(float)
+        * float(calibration["frontier_quality_work_share_multiplier"])
+    )
+    return capability * (frontier_share + (1.0 - frontier_share) * local_multiplier)
+
+
+def _cloud_oss_cost_index(
+    cloud_usage: np.ndarray,
+    hardware_name: str,
+    config: SimulationConfig,
+) -> float:
+    if hardware_name != "cloud_oss":
+        return 0.0
+    benchmark = _hardware_benchmark(config, hardware_name)
+    hours = config.cloud_oss_hours_per_usage_unit_period
+    if hours is None:
+        hours = 24.0 * 30.4375 * config.resolution_months
+    usd = (
+        cloud_usage.sum()
+        * float(benchmark["hourly_cloud_price_usd"])
+        * hours
+        / float(benchmark["max_concurrent_users"])
+    )
+    return float(usd / config.usd_per_service_cost_index_quarter)
 
 
 def _apply_service_budget_limit(
@@ -475,7 +605,7 @@ def _local_hardware_multiplier(
     hardware_budget_scale: float,
     local_fallback_policy: str,
 ) -> tuple[np.ndarray, np.ndarray]:
-    if hardware_name == "cloud_api_only":
+    if hardware_name in ("cloud_api_only", "cloud_oss"):
         zeros = np.zeros_like(wait_multiplier)
         return zeros, zeros
     local_capacity = wait_multiplier
@@ -496,32 +626,49 @@ def _effective_usage_with_local_fallback(
     local_fallback_policy: str,
     access_plan_name: str,
     token_cost: float,
+    service_provider_name: str,
     config: SimulationConfig,
-) -> tuple[np.ndarray, np.ndarray, float, float, float, float]:
+) -> tuple[np.ndarray, np.ndarray, float, float, float, float, np.ndarray]:
     confidential_requested = base_requested_usage * config.confidential_document_fraction
     non_confidential_requested = base_requested_usage - confidential_requested
     local_multiplier, fallback_multiplier = _local_hardware_multiplier(
-        wait_multiplier,
-        wait_tolerance,
-        hardware_name,
-        hardware_budget_scale,
-        local_fallback_policy,
+        wait_multiplier, wait_tolerance, hardware_name, hardware_budget_scale, local_fallback_policy
     )
+    provider_confidential_share = float(SERVICE_PROVIDERS[service_provider_name]["confidential_capacity_share"])
+    service_confidential_usage = confidential_requested * provider_confidential_share
 
-    access_multiplier, cloud_cost, topup_cost, exhausted_share = _apply_access_plan(
-        non_confidential_requested,
-        active,
-        access_plan_name,
-        token_cost,
-        config,
-    )
-    frontier_usage = non_confidential_requested * access_multiplier
-    frontier_usage, cloud_cost, service_budget_scale = _apply_service_budget_limit(frontier_usage, cloud_cost, config)
+    if hardware_name == "cloud_oss":
+        frontier_usage = non_confidential_requested
+        cloud_usage = frontier_usage + service_confidential_usage
+        cloud_cost = _cloud_oss_cost_index(cloud_usage, hardware_name, config)
+        frontier_usage, cloud_cost, service_budget_scale = _apply_service_budget_limit(
+            frontier_usage, cloud_cost, config
+        )
+        service_confidential_usage *= service_budget_scale
+        topup_cost = 0.0
+        exhausted_share = 0.0
+    else:
+        access_multiplier, cloud_cost, topup_cost, exhausted_share = _apply_access_plan(
+            non_confidential_requested, active, access_plan_name, token_cost, config
+        )
+        frontier_usage = non_confidential_requested * access_multiplier
+        frontier_usage, cloud_cost, service_budget_scale = _apply_service_budget_limit(frontier_usage, cloud_cost, config)
+
     local_confidential_usage = confidential_requested * local_multiplier
+    unavailable_confidential = np.maximum(
+        0.0, confidential_requested - service_confidential_usage - local_confidential_usage
+    )
     fallback_usage = np.maximum(0.0, non_confidential_requested - frontier_usage) * fallback_multiplier
-    effective_usage = frontier_usage + local_confidential_usage + fallback_usage
-    return effective_usage, confidential_requested, cloud_cost, topup_cost, exhausted_share, service_budget_scale
-
+    effective_usage = frontier_usage + service_confidential_usage + local_confidential_usage + fallback_usage
+    confidential_penalty = np.clip(
+        1.0
+        - config.confidential_mixing_ratio
+        * config.confidential_mixing_penalty
+        * np.divide(unavailable_confidential, base_requested_usage, out=np.zeros_like(base_requested_usage), where=base_requested_usage > 0),
+        0.0,
+        1.0,
+    )
+    return effective_usage, confidential_requested, cloud_cost, topup_cost, exhausted_share, service_budget_scale, confidential_penalty
 
 def _torch_module_and_device():
     try:
@@ -558,13 +705,13 @@ def _resolve_backend(backend: str) -> str:
     raise ValueError(f"Unknown backend: {backend}")
 
 
-def _simulate_one_scenario(args: tuple[str, str, str, str, str, str, SimulationConfig, int]) -> pd.DataFrame:
-    if config_backend(args) == "torch-mps":
+def _simulate_one_scenario(args: tuple[str, str, str, str, str, str, str, SimulationConfig, int]) -> pd.DataFrame:
+    if args[2] != "cloud_oss" and config_backend(args) == "torch-mps":
         return _simulate_one_scenario_torch_mps(args)
-    if config_backend(args) == "numba":
+    if args[2] != "cloud_oss" and config_backend(args) == "numba":
         return _simulate_one_scenario_numba(args)
 
-    model_name, token_name, hardware_name, refresh_name, access_plan_name, local_fallback_policy, config, scenario_seed = args
+    model_name, token_name, hardware_name, refresh_name, access_plan_name, local_fallback_policy, service_provider_name, config, scenario_seed = args
     rng = np.random.default_rng(scenario_seed)
     run_rows = []
 
@@ -574,7 +721,19 @@ def _simulate_one_scenario(args: tuple[str, str, str, str, str, str, SimulationC
         return_changes: list[float] = []
 
         for period in range(config.periods):
-            capability = _capability_multiplier(period, model_name, config.plateau_quarter, config.resolution_months)
+            embargo_shock = bool(
+                service_provider_name == "global_service"
+                and rng.random() < config.embargo_shock_probability
+            )
+            capability = _service_capability_multiplier(
+                period,
+                model_name,
+                service_provider_name,
+                config.plateau_quarter,
+                config.resolution_months,
+                embargo_shock,
+                config,
+            )
             token_cost = _token_cost_multiplier(period, TOKEN_SCENARIOS[token_name], config.periods)
             (
                 wait_multiplier,
@@ -583,8 +742,7 @@ def _simulate_one_scenario(args: tuple[str, str, str, str, str, str, SimulationC
                 hardware_budget_scale,
                 hardware_bonus,
             ) = _hardware_adjustments(users_df, hardware_name, refresh_name, config)
-            scenario_capability_multiplier = config.onprem_capability_multiplier if hardware_name != "cloud_api_only" else 1.0
-            effective_capability = capability * scenario_capability_multiplier
+            effective_capability = _user_effective_capability(capability, users_df, hardware_name, config)
 
             adoption_multiplier = 1.0 + config.adoption_capability_elasticity * (capability - 1.0)
             adoption_prob = np.clip(users_df["adoption_propensity"].to_numpy(float) * adoption_multiplier, 0.02, 0.98)
@@ -597,6 +755,7 @@ def _simulate_one_scenario(args: tuple[str, str, str, str, str, str, SimulationC
                 topup_cost,
                 exhausted_share,
                 service_budget_scale,
+                confidential_penalty,
             ) = _effective_usage_with_local_fallback(
                 base_requested_usage,
                 wait_multiplier,
@@ -607,6 +766,7 @@ def _simulate_one_scenario(args: tuple[str, str, str, str, str, str, SimulationC
                 local_fallback_policy,
                 access_plan_name,
                 token_cost,
+                service_provider_name,
                 config,
             )
             delivered_usage_multiplier = np.divide(
@@ -625,12 +785,17 @@ def _simulate_one_scenario(args: tuple[str, str, str, str, str, str, SimulationC
             )
             improved = rng.random(config.users) < improvement_prob
 
+            gain_scale = config.resolution_months / 12.0
             sampled_gains = rng.normal(
-                users_df["mean_gain"].to_numpy(float) * effective_capability * hardware_bonus * capability_fit,
-                users_df["sigma"].to_numpy(float),
+                users_df["mean_gain"].to_numpy(float) * gain_scale * effective_capability * hardware_bonus * capability_fit,
+                users_df["sigma"].to_numpy(float) * gain_scale,
             )
-            ai_realized_gain = np.clip(sampled_gains, config.ai_gain_min, config.ai_gain_max) * active * improved * delivered_usage_multiplier
-            zero_risk_gain = config.zero_risk_feature_gain * users_df["adoption_mean"].to_numpy(float)
+            ai_realized_gain = np.clip(
+                sampled_gains,
+                config.ai_gain_min * gain_scale,
+                config.ai_gain_max * gain_scale,
+            ) * active * improved * delivered_usage_multiplier * confidential_penalty
+            zero_risk_gain = config.zero_risk_feature_gain * gain_scale * users_df["adoption_mean"].to_numpy(float)
             realized_gain = zero_risk_gain + ai_realized_gain
             efficiency_index = 1.0 + realized_gain
 
@@ -646,13 +811,15 @@ def _simulate_one_scenario(args: tuple[str, str, str, str, str, str, SimulationC
 
             run_rows.append(
                 {
-                    "scenario": f"{model_name}|{token_name}|{access_plan_name}|{hardware_name}|{refresh_name}|{local_fallback_policy}",
+                    "scenario": f"{model_name}|{token_name}|{access_plan_name}|{hardware_name}|{refresh_name}|{local_fallback_policy}|{service_provider_name}",
                     "model": model_name,
                     "token_cost": token_name,
                     "access_plan": access_plan_name,
                     "hardware": hardware_name,
                     "hardware_refresh": refresh_name,
                     "local_fallback": local_fallback_policy,
+                    "service_provider": service_provider_name,
+                    "embargo_shock": embargo_shock,
                     "backend": config.backend,
                     "run": run,
                     "period": period,
@@ -699,7 +866,7 @@ def _numba_module():
 
 def _model_code(model_name: str, resolution_months: int) -> tuple[int, float]:
     model = MODEL_SCENARIOS[model_name]
-    return (1 if model["growth"] else 0), float(model["lag_months"]) / resolution_months
+    return (1 if model["growth"] else 0), float(model["lag_months"])
 
 
 def _token_code(token_name: str) -> int:
@@ -742,10 +909,12 @@ def _numba_simulator():
         wait_tolerance: np.ndarray,
         mean_gain_base: np.ndarray,
         sigma: np.ndarray,
+        frontier_quality_work_share: np.ndarray,
         wait_multiplier: np.ndarray,
         adoption_draws: np.ndarray,
         improvement_draws: np.ndarray,
         normal_draws: np.ndarray,
+        embargo_draws: np.ndarray,
         model_growth: int,
         model_lag: float,
         plateau_quarter: int,
@@ -773,16 +942,28 @@ def _numba_simulator():
         ai_gain_min: float,
         ai_gain_max: float,
         zero_risk_feature_gain: float,
+        provider_capability_lag_months: float,
+        provider_embargo_affected: int,
+        provider_handles_confidential: int,
+        embargo_shock_probability: float,
+        embargo_rollback_months: int,
+        confidential_mixing_ratio: float,
+        confidential_mixing_penalty: float,
     ) -> np.ndarray:
         periods, users = adoption_draws.shape
-        metrics = np.empty((periods, 19), dtype=np.float64)
+        metrics = np.empty((periods, 20), dtype=np.float64)
         previous_return = 0.0
         change_count = 0
         change_mean = 0.0
         change_m2 = 0.0
 
         for period in range(periods):
-            effective_period = period - model_lag
+            embargo_shock = provider_embargo_affected == 1 and embargo_draws[period] < embargo_shock_probability
+            effective_period = (
+                period * resolution_months - model_lag - provider_capability_lag_months
+            ) / 3.0
+            if embargo_shock:
+                effective_period -= embargo_rollback_months / 3.0
             if effective_period < 0:
                 effective_period = 0
             if model_growth == 0 and effective_period > plateau_quarter:
@@ -903,14 +1084,28 @@ def _numba_simulator():
                     if fallback_multiplier > 1.0:
                         fallback_multiplier = 1.0
 
+                service_confidential_usage = confidential_requested if provider_handles_confidential == 1 else 0.0
                 local_confidential_usage = confidential_requested * local_multiplier
+                if provider_handles_confidential == 1:
+                    local_confidential_usage = 0.0
+                unavailable_confidential = confidential_requested - service_confidential_usage - local_confidential_usage
                 fallback_usage = (non_confidential_requested - frontier_delivered) * fallback_multiplier
                 if fallback_usage < 0.0:
                     fallback_usage = 0.0
-                effective_usage = frontier_delivered + local_confidential_usage + fallback_usage
+                effective_usage = frontier_delivered + service_confidential_usage + local_confidential_usage + fallback_usage
                 effective_usage_sum += effective_usage
+                confidential_penalty = 1.0
+                if base_requested_usage > 0.0:
+                    confidential_penalty = 1.0 - confidential_mixing_ratio * confidential_mixing_penalty * unavailable_confidential / base_requested_usage
+                    if confidential_penalty < 0.0:
+                        confidential_penalty = 0.0
 
-                improvement_prob = improvement_base_probability + improvement_capability_weight * effective_capability * capability_fit[user]
+                user_effective_capability = effective_capability
+                if hardware_is_cloud != 1:
+                    user_effective_capability = capability * (
+                        frontier_quality_work_share[user] + (1.0 - frontier_quality_work_share[user]) * scenario_capability_multiplier
+                    )
+                improvement_prob = improvement_base_probability + improvement_capability_weight * user_effective_capability * capability_fit[user]
                 if improvement_prob < improvement_probability_min:
                     improvement_prob = improvement_probability_min
                 elif improvement_prob > improvement_probability_max:
@@ -918,23 +1113,30 @@ def _numba_simulator():
 
                 improved = improvement_draws[period, user] < improvement_prob
                 sampled_gain = (
-                    normal_draws[period, user] * sigma[user]
-                    + mean_gain_base[user] * effective_capability * hardware_bonus * capability_fit[user]
+                    normal_draws[period, user] * sigma[user] * resolution_months / 12.0
+                    + mean_gain_base[user]
+                    * resolution_months
+                    / 12.0
+                    * user_effective_capability
+                    * hardware_bonus
+                    * capability_fit[user]
                 )
-                if sampled_gain < ai_gain_min:
-                    sampled_gain = ai_gain_min
-                elif sampled_gain > ai_gain_max:
-                    sampled_gain = ai_gain_max
+                scaled_ai_gain_min = ai_gain_min * resolution_months / 12.0
+                scaled_ai_gain_max = ai_gain_max * resolution_months / 12.0
+                if sampled_gain < scaled_ai_gain_min:
+                    sampled_gain = scaled_ai_gain_min
+                elif sampled_gain > scaled_ai_gain_max:
+                    sampled_gain = scaled_ai_gain_max
 
                 access_multiplier = 1.0
                 if base_requested_usage > 0.0:
                     access_multiplier = effective_usage / base_requested_usage
 
-                ai_realized_gain = sampled_gain * (1.0 if active else 0.0) * (1.0 if improved else 0.0) * access_multiplier
+                ai_realized_gain = sampled_gain * (1.0 if active else 0.0) * (1.0 if improved else 0.0) * access_multiplier * confidential_penalty
                 total_ai_gain += ai_realized_gain
                 if ai_realized_gain < 0.0:
                     negative_ai_gain_count += 1.0
-                zero_risk_gain_sum += zero_risk_feature_gain * adoption_mean[user]
+                zero_risk_gain_sum += zero_risk_feature_gain * resolution_months / 12.0 * adoption_mean[user]
 
             total_cost = cloud_cost + hardware_cost
             total_realized_gain = total_ai_gain + zero_risk_gain_sum
@@ -972,6 +1174,7 @@ def _numba_simulator():
             metrics[period, 16] = zero_risk_gain_sum / users
             metrics[period, 17] = total_ai_gain / users
             metrics[period, 18] = negative_ai_gain_count / users
+            metrics[period, 19] = 1.0 if embargo_shock else 0.0
             # return_rate and risk are appended separately to keep the compact matrix small.
 
         return metrics
@@ -979,8 +1182,8 @@ def _numba_simulator():
     return simulate_run
 
 
-def _simulate_one_scenario_numba(args: tuple[str, str, str, str, str, str, SimulationConfig, int]) -> pd.DataFrame:
-    model_name, token_name, hardware_name, refresh_name, access_plan_name, local_fallback_policy, config, scenario_seed = args
+def _simulate_one_scenario_numba(args: tuple[str, str, str, str, str, str, str, SimulationConfig, int]) -> pd.DataFrame:
+    model_name, token_name, hardware_name, refresh_name, access_plan_name, local_fallback_policy, service_provider_name, config, scenario_seed = args
     rng = np.random.default_rng(scenario_seed)
     users = config.users
     periods = config.periods
@@ -992,7 +1195,7 @@ def _simulate_one_scenario_numba(args: tuple[str, str, str, str, str, str, Simul
     token_mode = _token_code(token_name)
     access_plan_mode = _access_plan_code(access_plan_name)
     local_fallback_default = _local_fallback_policy_code(local_fallback_policy)
-    scenario_label = f"{model_name}|{token_name}|{access_plan_name}|{hardware_name}|{refresh_name}|{local_fallback_policy}"
+    scenario_label = f"{model_name}|{token_name}|{access_plan_name}|{hardware_name}|{refresh_name}|{local_fallback_policy}|{service_provider_name}"
     total_rows = config.runs * periods
     hardware_is_cloud = 1 if hardware_name == "cloud_api_only" else 0
 
@@ -1004,6 +1207,7 @@ def _simulate_one_scenario_numba(args: tuple[str, str, str, str, str, str, Simul
         "hardware": np.full(total_rows, hardware_name, dtype=object),
         "hardware_refresh": np.full(total_rows, refresh_name, dtype=object),
         "local_fallback": np.full(total_rows, local_fallback_policy, dtype=object),
+        "service_provider": np.full(total_rows, service_provider_name, dtype=object),
         "backend": np.full(total_rows, "numba", dtype=object),
         "run": np.empty(total_rows, dtype=np.int64),
         "period": np.empty(total_rows, dtype=np.int64),
@@ -1028,11 +1232,13 @@ def _simulate_one_scenario_numba(args: tuple[str, str, str, str, str, str, Simul
         "cost_per_efficiency_increment": np.empty(total_rows, dtype=np.float64),
         "return_rate": np.empty(total_rows, dtype=np.float64),
         "risk": np.empty(total_rows, dtype=np.float64),
+        "embargo_shock": np.empty(total_rows, dtype=np.float64),
     }
 
     for run in range(config.runs):
         users_df = _sample_users(rng, users, config)
         adoption_propensity, adoption_mean, capability_fit, usage_intensity, wait_tolerance, mean_gain_base, sigma = _user_vectors(users_df)
+        frontier_quality_work_share = users_df["frontier_quality_work_share"].to_numpy(float, copy=True)
         (
             wait_multiplier,
             hardware_cost,
@@ -1045,6 +1251,8 @@ def _simulate_one_scenario_numba(args: tuple[str, str, str, str, str, str, Simul
         adoption_draws = rng.random((periods, users))
         improvement_draws = rng.random((periods, users))
         normal_draws = rng.normal(size=(periods, users))
+        embargo_draws = rng.random(periods)
+        provider = SERVICE_PROVIDERS[service_provider_name]
         metrics = simulate_run(
             adoption_propensity,
             adoption_mean,
@@ -1053,10 +1261,12 @@ def _simulate_one_scenario_numba(args: tuple[str, str, str, str, str, str, Simul
             wait_tolerance,
             mean_gain_base,
             sigma,
+            frontier_quality_work_share,
             wait_multiplier,
             adoption_draws,
             improvement_draws,
             normal_draws,
+            embargo_draws,
             model_growth,
             model_lag,
             config.plateau_quarter,
@@ -1084,6 +1294,13 @@ def _simulate_one_scenario_numba(args: tuple[str, str, str, str, str, str, Simul
             config.ai_gain_min,
             config.ai_gain_max,
             config.zero_risk_feature_gain,
+            provider["capability_lag_months"],
+            1 if provider["embargo_affected"] else 0,
+            1 if provider["confidential_capacity_share"] >= 0.999999 else 0,
+            config.embargo_shock_probability,
+            config.embargo_rollback_months,
+            config.confidential_mixing_ratio,
+            config.confidential_mixing_penalty,
         )
 
         row_slice = slice(run * periods, (run + 1) * periods)
@@ -1096,6 +1313,7 @@ def _simulate_one_scenario_numba(args: tuple[str, str, str, str, str, str, Simul
         data["zero_risk_efficiency_gain"][row_slice] = metrics[:, 16]
         data["mean_ai_efficiency_gain"][row_slice] = metrics[:, 17]
         data["negative_ai_gain_share"][row_slice] = metrics[:, 18]
+        data["embargo_shock"][row_slice] = metrics[:, 19]
         data["active_user_share"][row_slice] = metrics[:, 5]
         data["delivered_usage_share"][row_slice] = metrics[:, 6]
         data["confidential_usage_share"][row_slice] = metrics[:, 7]
@@ -1121,12 +1339,12 @@ def _simulate_one_scenario_numba(args: tuple[str, str, str, str, str, str, Simul
     return pd.DataFrame(data)
 
 
-def config_backend(args: tuple[str, str, str, str, str, str, SimulationConfig, int]) -> str:
-    return args[6].backend
+def config_backend(args: tuple[str, str, str, str, str, str, str, SimulationConfig, int]) -> str:
+    return args[7].backend
 
 
-def _simulate_one_scenario_torch_mps(args: tuple[str, str, str, str, str, str, SimulationConfig, int]) -> pd.DataFrame:
-    model_name, token_name, hardware_name, refresh_name, access_plan_name, local_fallback_policy, config, scenario_seed = args
+def _simulate_one_scenario_torch_mps(args: tuple[str, str, str, str, str, str, str, SimulationConfig, int]) -> pd.DataFrame:
+    model_name, token_name, hardware_name, refresh_name, access_plan_name, local_fallback_policy, service_provider_name, config, scenario_seed = args
     torch, device = _torch_module_and_device()
     rng = np.random.default_rng(scenario_seed)
     run_rows = []
@@ -1157,7 +1375,8 @@ def _simulate_one_scenario_torch_mps(args: tuple[str, str, str, str, str, str, S
         for period in range(config.periods):
             period_seed = scenario_seed + run * 100003 + period
             cpu_generator = torch.Generator(device="cpu").manual_seed(period_seed)
-            capability = _capability_multiplier(period, model_name, config.plateau_quarter, config.resolution_months)
+            embargo_shock = bool(service_provider_name == "global_service" and np.random.default_rng(period_seed + 17).random() < config.embargo_shock_probability)
+            capability = _service_capability_multiplier(period, model_name, service_provider_name, config.plateau_quarter, config.resolution_months, embargo_shock, config)
             token_cost = _token_cost_multiplier(period, TOKEN_SCENARIOS[token_name], config.periods)
             effective_capability = capability * scenario_capability_multiplier
 
@@ -1191,8 +1410,14 @@ def _simulate_one_scenario_torch_mps(args: tuple[str, str, str, str, str, str, S
                 else:
                     fallback_multiplier = torch.clamp(local_multiplier * wait_tolerance, 0.0, 1.0)
             local_confidential_usage = confidential_requested * local_multiplier
+            if SERVICE_PROVIDERS[service_provider_name]["confidential_capacity_share"]:
+                service_confidential_usage = confidential_requested
+                local_confidential_usage = torch.zeros_like(confidential_requested)
+            else:
+                service_confidential_usage = torch.zeros_like(confidential_requested)
+            unavailable_confidential = torch.clamp(confidential_requested - service_confidential_usage - local_confidential_usage, min=0.0)
             fallback_usage = torch.clamp(non_confidential_requested - frontier_usage, min=0.0) * fallback_multiplier
-            effective_usage = frontier_usage + local_confidential_usage + fallback_usage
+            effective_usage = frontier_usage + service_confidential_usage + local_confidential_usage + fallback_usage
             delivered_usage_multiplier = torch.where(
                 base_requested_usage > 0,
                 effective_usage / torch.clamp(base_requested_usage, min=1e-9),
@@ -1206,17 +1431,31 @@ def _simulate_one_scenario_torch_mps(args: tuple[str, str, str, str, str, str, S
                 config.improvement_probability_max,
             )
             improved = torch.rand(config.users, generator=cpu_generator).to(device) < improvement_prob
+            gain_scale = config.resolution_months / 12.0
             sampled_gains = (
-                torch.randn(config.users, generator=cpu_generator).to(device) * sigma
-                + mean_gain_base * effective_capability * hardware_bonus * capability_fit
+                torch.randn(config.users, generator=cpu_generator).to(device) * sigma * gain_scale
+                + mean_gain_base * gain_scale * effective_capability * hardware_bonus * capability_fit
             )
             ai_realized_gain = (
-                torch.clamp(sampled_gains, config.ai_gain_min, config.ai_gain_max)
+                torch.clamp(
+                    sampled_gains,
+                    config.ai_gain_min * gain_scale,
+                    config.ai_gain_max * gain_scale,
+                )
                 * active.to(torch.float32)
                 * improved.to(torch.float32)
                 * delivered_usage_multiplier
+                * torch.clamp(
+                    1.0 - config.confidential_mixing_ratio * config.confidential_mixing_penalty * torch.where(
+                        base_requested_usage > 0,
+                        unavailable_confidential / torch.clamp(base_requested_usage, min=1e-9),
+                        torch.zeros_like(base_requested_usage),
+                    ),
+                    0.0,
+                    1.0,
+                )
             )
-            zero_risk_gain = config.zero_risk_feature_gain * adoption_mean
+            zero_risk_gain = config.zero_risk_feature_gain * gain_scale * adoption_mean
             realized_gain = zero_risk_gain + ai_realized_gain
             efficiency_index = 1.0 + realized_gain
 
@@ -1236,13 +1475,15 @@ def _simulate_one_scenario_torch_mps(args: tuple[str, str, str, str, str, str, S
 
             run_rows.append(
                 {
-                    "scenario": f"{model_name}|{token_name}|{access_plan_name}|{hardware_name}|{refresh_name}|{local_fallback_policy}",
+                    "scenario": f"{model_name}|{token_name}|{access_plan_name}|{hardware_name}|{refresh_name}|{local_fallback_policy}|{service_provider_name}",
                     "model": model_name,
                     "token_cost": token_name,
                     "access_plan": access_plan_name,
                     "hardware": hardware_name,
                     "hardware_refresh": refresh_name,
                     "local_fallback": local_fallback_policy,
+                    "service_provider": service_provider_name,
+                    "embargo_shock": embargo_shock,
                     "backend": "torch-mps",
                     "run": run,
                     "period": period,
@@ -1334,7 +1575,7 @@ def _apply_service_budget_limit_torch(
     return delivered_usage * scale, budget, scale
 
 
-def scenario_grid() -> Iterable[tuple[str, str, str, str, str, str]]:
+def scenario_grid() -> Iterable[tuple[str, str, str, str, str, str, str]]:
     for model_name, token_name, hardware_name, refresh_name, access_plan_name in itertools.product(
         MODEL_SCENARIOS.keys(),
         TOKEN_SCENARIOS.keys(),
@@ -1344,7 +1585,9 @@ def scenario_grid() -> Iterable[tuple[str, str, str, str, str, str]]:
     ):
         fallback_policies = ("persona_choice",) if hardware_name == "cloud_api_only" else LOCAL_FALLBACK_POLICIES
         for local_fallback_policy in fallback_policies:
-            yield model_name, token_name, hardware_name, refresh_name, access_plan_name, local_fallback_policy
+            provider_names = ("local_hardware",) if hardware_name != "cloud_api_only" else ("global_service", "european_service")
+            for service_provider_name in provider_names:
+                yield model_name, token_name, hardware_name, refresh_name, access_plan_name, local_fallback_policy, service_provider_name
 
 
 def run_simulation(config: SimulationConfig) -> pd.DataFrame:
@@ -1412,8 +1655,20 @@ def _validate_budget_args(args: argparse.Namespace) -> None:
         raise SystemExit("Improvement probability clip bounds must be between 0 and 1, with min no greater than max.")
     if args.ai_gain_min > args.ai_gain_max:
         raise SystemExit("--ai-gain-min must be no greater than --ai-gain-max.")
+    if not 0.0 <= args.embargo_shock_probability <= 1.0:
+        raise SystemExit("--embargo-shock-probability must be between 0 and 1.")
+    if args.embargo_rollback_months < 0:
+        raise SystemExit("--embargo-rollback-months must be non-negative.")
+    if not 0.0 <= args.confidential_mixing_ratio <= 1.0:
+        raise SystemExit("--confidential-mixing-ratio must be between 0 and 1.")
+    if not 0.0 <= args.confidential_mixing_penalty <= 1.0:
+        raise SystemExit("--confidential-mixing-penalty must be between 0 and 1.")
     if args.zero_risk_feature_gain < 0:
         raise SystemExit("--zero-risk-feature-gain must be non-negative.")
+    if args.it_support_max_users < 0:
+        raise SystemExit("--it-support-max-users must be non-negative.")
+    if args.cloud_oss_hours_per_usage_unit_period is not None and args.cloud_oss_hours_per_usage_unit_period <= 0:
+        raise SystemExit("--cloud-oss-hours-per-usage-unit-period must be positive.")
 
 
 def summarize(results: pd.DataFrame) -> pd.DataFrame:
@@ -1425,6 +1680,7 @@ def summarize(results: pd.DataFrame) -> pd.DataFrame:
         "hardware",
         "hardware_refresh",
         "local_fallback",
+        "service_provider",
         "backend",
         "period",
         "month",
@@ -1434,6 +1690,7 @@ def summarize(results: pd.DataFrame) -> pd.DataFrame:
         "zero_risk_efficiency_gain",
         "mean_ai_efficiency_gain",
         "negative_ai_gain_share",
+        "embargo_shock",
         "active_user_share",
         "delivered_usage_share",
         "confidential_usage_share",
@@ -1732,6 +1989,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--improvement-probability-max", type=float, default=0.92)
     parser.add_argument("--ai-gain-min", type=float, default=-0.25)
     parser.add_argument("--ai-gain-max", type=float, default=2.0)
+    parser.add_argument("--embargo-shock-probability", type=float, default=0.05)
+    parser.add_argument("--embargo-rollback-months", type=int, default=6)
+    parser.add_argument("--confidential-mixing-ratio", type=float, default=0.5)
+    parser.add_argument("--confidential-mixing-penalty", type=float, default=0.5)
+    parser.add_argument("--cloud-oss-hours-per-usage-unit-period", type=float, default=None)
+    parser.add_argument("--disable-it-support", action="store_true", help="Disable the default 0.5-FTE IT-support cost for small on-premise and OSS-cloud companies.")
+    parser.add_argument("--it-support-max-users", type=int, default=50, help="Apply the IT-support cost at or below this employee count.")
     parser.add_argument(
         "--zero-risk-feature-gain",
         type=float,
@@ -1763,7 +2027,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--hardware-calibration",
         choices=sorted(HARDWARE_CALIBRATIONS),
-        default="h100",
+        default="h100-gemma4-31b",
         help="Hardware/model calibration profile for local on-prem runs.",
     )
     parser.add_argument(
@@ -1817,6 +2081,13 @@ def main() -> None:
         improvement_probability_max=args.improvement_probability_max,
         ai_gain_min=args.ai_gain_min,
         ai_gain_max=args.ai_gain_max,
+        embargo_shock_probability=args.embargo_shock_probability,
+        embargo_rollback_months=args.embargo_rollback_months,
+        confidential_mixing_ratio=args.confidential_mixing_ratio,
+        confidential_mixing_penalty=args.confidential_mixing_penalty,
+        cloud_oss_hours_per_usage_unit_period=args.cloud_oss_hours_per_usage_unit_period,
+        it_support_enabled=not args.disable_it_support,
+        it_support_max_users=args.it_support_max_users,
         zero_risk_feature_gain=args.zero_risk_feature_gain,
         backend=backend,
         output_dir=args.output_dir,

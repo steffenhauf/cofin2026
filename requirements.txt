@@ -5,6 +5,7 @@ matplotlib
 plotly
 kaleido
 tqdm
+numba
 
 # Optional for --backend torch-mps on Apple Silicon:
 # torch

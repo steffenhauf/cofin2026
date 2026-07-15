@@ -149,9 +149,10 @@ This local-only sweep uses representative company sizes of 5, 50, 100, 500, and
 2,500 employees; monthly service budgets of $5, $10, $25, and $50 per person;
 the six requested upfront hardware budgets; confidentiality shares from 0% to
 100%; and a separate 18-month capability-plateau versus continuous-growth run.
-It runs five outer company work-mix profiles into separate subfolders:
+It runs six outer company work-mix profiles into separate subfolders:
 `administration_heavy`, `mixed`, `manual_labor_heavy`,
-`software_engineering_heavy`, and `knowledge_worker_heavy`. Select a subset
+`software_engineering_heavy`, `knowledge_worker_heavy`, and
+`creative_worker_heavy`. Select a subset
 with `--company-profiles software_engineering_heavy,knowledge_worker_heavy`.
 For each configuration and time point it selects low-risk, balanced-optimum,
 and high-gain portfolios from the simulated efficient frontier. The two wide
@@ -165,6 +166,25 @@ CSVs have the same columns:
 including any necessary sigma-rule fallback. The sweep also writes
 `portfolio_month_by_month_grid.png` and an interactive
 `portfolio_risk_return_animation.html`.
+
+Service-provider scenarios are included in the sweep. `global_service` has
+the normal capability path but is exposed to embargo shocks; `european_service`
+has the same price and a nine-month capability lag, handles confidential data,
+and is embargo-safe. Local-hardware scenarios use `local_hardware` and are not
+affected by service embargoes. The run-level CSVs include `service_provider`
+and `embargo_shock`.
+
+Embargo and confidential-mixing assumptions are configurable in both the
+simulator and sweep:
+
+- `--embargo-shock-probability`, default `0.05` per simulated period for
+  global service.
+- `--embargo-rollback-months`, default `6`; during a shock, global service
+  uses the capability path from six months earlier.
+- `--confidential-mixing-ratio`, default `0.5`; fraction of otherwise
+  processable mixed work affected when confidential work cannot be served.
+- `--confidential-mixing-penalty`, default `0.5`; efficiency multiplier
+  penalty applied to that mixed work.
 
 Each completed portfolio sweep also produces summary views from the selected
 portfolio manifest:
@@ -232,6 +252,12 @@ default; change this with `--individual-paths N` or set it to `0` to hide them.
 ## Metrics
 
 The base efficiency index is `1.0`. A realized gain of `0.12` means the user's simulated output index is `1.12`.
+
+Efficiency gains are calibrated per year. If a different resolution is selected,
+gain means, noise, bounds, and the zero-cost feature gain are scaled by
+`resolution_months / 12`; capability growth is evaluated using elapsed calendar
+months. Thus a 10% annual gain contributes 2.5% in a quarterly period rather
+than applying the full annual gain every quarter.
 
 The main return metric is:
 
@@ -308,7 +334,13 @@ The split uses the classic Rogers diffusion categories often applied in SME tech
 - late majority: 34%
 - laggards: 16%
 
-Each persona supplies an adoption-prior mean, usage intensity, and willingness to wait for on-prem hardware access. Individual adoption propensity is sampled from a beta distribution around that group mean. This represents a calibration prior, not a claim that any Rogers group has one measured adoption probability.
+Each adopter persona supplies an adoption-prior mean, usage intensity, and willingness to wait for on-prem hardware access. Individual adoption propensity is sampled from a beta distribution around that group mean. This represents a calibration prior, not a claim that any Rogers group has one measured adoption probability.
+
+“Creative worker” is modeled as a work type, not as an additional Rogers
+adopter category. That keeps adoption behavior separate from the nature of the
+employee's work. The default mix assigns creative work 10% by reducing the
+administration share from 44% to 34%; the dedicated `creative_worker_heavy`
+profile assigns it 70% of the workforce.
 
 Capability fit belongs to the work type rather than the adopter persona. It represents the share/suitability of that work for the model's effective capability frontier: administration is the reference fit, knowledge work and software engineering are somewhat lower in the mixed-context baseline, and manual labor is much lower. This follows evidence that generative-AI results vary by task, including potentially negative outcomes outside its effective frontier.
 
@@ -328,19 +360,21 @@ The zero-risk feature gain defaults to 1.0% before the persona scaling. It appli
 
 ### Productivity Gains
 
-Four employee types are simulated:
+Five employee types are simulated:
 
 - software engineering, default share 36%
 - administration, default share 44%
 - manual labor, default share 20%
 - knowledge work, used by the company work-mix profiles
+- creative work, default share 10%
 
-Mean productivity gain assumptions are deliberately conservative for a toy model:
+Mean annual productivity-gain assumptions are deliberately conservative for a toy model:
 
 - software engineering: mean gain 10.0%, with noise, as the mixed-context default
 - administration: mean gain 17.0%, with noise
 - manual labor: mean gain 2.0%, with noise, reflecting modest support for email and knowledge lookup rather than core work execution
 - knowledge work: mean gain 15.0%, with noise. This is a conservative blended-work assumption: professional writing experiments measured a 40% time reduction, while a large cross-industry field experiment found 25% less email time and more modest document-speed effects.
+- creative work: mean gain 10.0%, with wider noise. This is an explicit modeling inference rather than a direct estimate: creative-work experiments find gains in ideation and individual output, but also implementation slowdowns for expert designers and reduced diversity of AI-assisted outputs. The wider noise represents that heterogeneity and the gain is not intended to imply that AI improves originality or final creative quality uniformly.
 
 The employee-type mix is configurable through `--employee-mix`.
 
@@ -369,8 +403,8 @@ Four model-access scenarios are included:
 
 - `frontier_growth`: frontier models continue to improve over the simulated period.
 - `frontier_plateau`: frontier models plateau after `--plateau-quarter`.
-- `oss_growth_lagged`: open-source models use the frontier capability available 12 months earlier.
-- `oss_plateau_lagged`: open-source models use the plateau path available 12 months earlier.
+- `oss_growth_lagged`: open-source models use the frontier capability available 4 months earlier.
+- `oss_plateau_lagged`: open-source models use the plateau path available 4 months earlier. Epoch AI estimates a four-month average open-weight versus closed-model ECI gap (May 2026): https://epoch.ai/data-insights/open-closed-eci-gap
 
 The default quarterly frontier capability improvement is 8.5%, capped at 2.6x. That is a stylized assumption, not a forecast.
 
@@ -490,10 +524,7 @@ Hardware budget now affects local scenarios continuously:
 - `0.0 < hardware_budget_scale < 1.0`: the model buys a fraction of the target local setup, pays the corresponding amortized cost share, blends in the local waiting effect, and blends in the refresh capability bonus.
 - `hardware_budget_scale = 1.0`: the full local scenario is funded.
 
-Hardware calibration profiles also control the assumed local-model quality:
-
-- `h100`: keeps on-prem capability aligned with the simulation baseline.
-- `rtx6000-blackwell-gemma-moe-26b`: uses an RTX 6000 Blackwell dollar anchor and scales local on-prem capability to a `Gemma MoE 26B`-class model relative to the off-prem baseline.
+Hardware calibration profiles use the supplied RTX 6000 Ada, RTX 6000 Pro, H100, and B200 system tiers. The sweep selects the highest affordable tier and scales it with replicas. It also evaluates a `cloud_oss` asset: proportional in-EU cloud hardware for the same OSS model, with no CAPEX or queueing loss, half of confidential requests eligible, and no embargo exposure. See [the hardware methodology](HARDWARE_BENCHMARKS.md).
 
 The simulation assumes perfect IT setup: no integration losses, security overhead, downtime, networking bottlenecks, or staff cost.
 
@@ -509,6 +540,8 @@ Productivity:
 - Paradis et al., "How much does AI impact development speed? An enterprise-based randomized controlled trial", 2024. Reports an estimated 21% reduction in time-on-task for Google software engineers in a bounded enterprise setting, with wide uncertainty. https://arxiv.org/abs/2410.12944
 - Becker et al., "Measuring the Impact of Early-2025 AI on Experienced Open-Source Developer Productivity", 2025. Reports a 19% slowdown for experienced developers in mature open-source codebases. https://arxiv.org/abs/2507.09089
 - Freeman et al., "Evaluation of Task Specific Productivity Improvements Using a Generative Artificial Intelligence Personal Assistant Tool", 2024. Reports office-task improvements ranging from 3.3% to 69%, strongest for summarization and instructions. https://arxiv.org/abs/2409.14511
+- Doshi and Hauser, "Generative artificial intelligence enhances individual creativity but reduces the diversity of novel content", Science Advances, 2024. A randomized story-writing experiment found higher individual creativity and writing quality with AI ideas, alongside more similar outputs across writers. https://doi.org/10.1126/sciadv.adn5290
+- Hou et al., "The Double-Edged Roles of Generative AI in the Creative Process: Experiments on Design Work", Information Systems Research, published online 2025. The studies distinguish ideation from implementation: ideation creativity improved, while expert designers using AI in implementation took substantially longer without a corresponding creativity gain. https://doi.org/10.1287/isre.2024.0937
 - Maier et al., "A meta-analysis of the effect of generative AI on productivity and learning in programming", 2026. Finds a moderate positive average productivity effect in programming with substantial heterogeneity across contexts. https://arxiv.org/abs/2605.04779
 
 Adoption:
@@ -520,10 +553,11 @@ Adoption:
 
 Costs and hardware:
 
-- NVIDIA H100, H200, and Blackwell/B200 product specifications are used as public anchors for the hardware generation assumptions. https://www.nvidia.com/en-us/data-center/
-- Public cloud/API market reporting and provider pricing discussions through 2024-2026 motivate the flat, gradual break-even, and sudden break-even token-cost scenarios. The simulation intentionally keeps these as normalized cost-index paths instead of exact provider economics.
-- The default hardware dollar calibration is anchored to the `onprem_10pct_capacity` scenario and a flat H100 assumption of `$30,000` per target unit. This is a modeling anchor for budget translation, not a claim about current contract pricing.
-- The alternate `rtx6000-blackwell-gemma-moe-26b` profile uses a flat RTX 6000 Blackwell anchor of `$8,565` and a local capability multiplier of `0.94x` to represent a `Gemma MoE 26B`-class on-prem model relative to the off-prem baseline. The `0.94x` figure is an explicit modeling assumption for this simulator, not a benchmark claim.
+- The current pricing, model-size, parallel-user, and private-cloud-rate inputs are the project-supplied table dated 14 July 2026. Their transcription and interpretation are documented in [HARDWARE_BENCHMARKS.md](HARDWARE_BENCHMARKS.md).
+- Google Cloud documents hourly GPU billing separately from VM, storage, and network costs; the latter are intentionally excluded under the ideal-IT assumption. https://cloud.google.com/products/compute/gpus-pricing
+- The 26B-and-larger local-model frontier-quality shares are sensitivity assumptions informed by the Gemma model card and task heterogeneity evidence, rather than benchmark claims. [HARDWARE_BENCHMARKS.md](HARDWARE_BENCHMARKS.md) gives the values and sources.
+- On-premise and OSS-cloud scenarios for companies up to 50 employees include a default 0.5-FTE TVöD Bund E 12/Stufe 3 IT position, including a 25% employer-cost load estimate. Use `--disable-it-support` or `--it-support-max-users` to change this.
+- The sweep writes `portfolio_per_bracket_pareto_table.md` at its output root. Its columns are grouped by employee bracket and portfolio split; rows group capability/token shock assumptions and work-mix profiles. Cells report the selected asset type, return, and risk.
 
 ## Simulation Flow
 
