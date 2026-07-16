@@ -1,13 +1,22 @@
 import pandas as pd
 
-from simulate_llm_efficiency import SimulationConfig, _capability_multiplier, _hardware_adjustments
+from simulate_llm_efficiency import (
+    SHOCK_COMBINATIONS,
+    SimulationConfig,
+    _capability_multiplier,
+    _hardware_adjustments,
+    _period_probability,
+    _stochastic_token_cost,
+)
 from sweep_portfolio_rate_changes import (
     COMPANY_PROFILES,
     SweepScenario,
     _choose,
+    company_profile_index,
     friendly_label,
     hardware_for_budget,
     hardware_selection_for_budget,
+    write_pareto_markdown_table,
     write_wide_csvs,
 )
 
@@ -24,6 +33,12 @@ def test_company_profiles_are_complete_workforce_mixes():
     for mix in COMPANY_PROFILES.values():
         assert abs(sum(mix.values()) - 1.0) < 1e-12
         assert "knowledge_work" in mix
+
+
+def test_company_profile_seed_indices_are_stable_for_array_jobs():
+    assert company_profile_index("administration_heavy") == 0
+    assert company_profile_index("creative_worker_heavy") == 5
+    assert company_profile_index("custom") == 0
 
 
 def test_oss_capability_matches_frontier_one_year_earlier():
@@ -91,3 +106,73 @@ def test_wide_csvs_share_column_layout(tmp_path):
     returns = pd.read_csv(tmp_path / "portfolio_rate_changes.csv")
     risks = pd.read_csv(tmp_path / "portfolio_rate_change_risk.csv")
     assert returns.columns.tolist() == risks.columns.tolist()
+
+
+def test_stochastic_shock_combinations_cover_all_subsets():
+    assert len(SHOCK_COMBINATIONS) == 8
+    assert SHOCK_COMBINATIONS[0] == "none"
+    assert SHOCK_COMBINATIONS[-1] == "sudden_break_even,gradual_break_even,capability_plateau"
+
+
+def test_monthly_shock_probability_is_resolution_invariant():
+    monthly = 0.1
+    quarterly = _period_probability(monthly, 3)
+    assert abs(1.0 - (1.0 - quarterly) ** 4 - (1.0 - monthly) ** 12) < 1e-12
+
+
+def test_stochastic_token_costs_are_persistent_and_ramp_after_occurrence():
+    assert _stochastic_token_cost(2, 12, False, None) == 1.0
+    assert _stochastic_token_cost(2, 12, True, None) == 1.85
+    assert _stochastic_token_cost(3, 12, False, 2) == 1.0
+    assert _stochastic_token_cost(11, 12, False, 2) == 1.85
+
+
+def test_stochastic_pareto_table_omits_deterministic_baseline_labels(tmp_path):
+    points = pd.DataFrame(
+        {
+            "company_profile": ["mixed"],
+            "users": [50],
+            "shock_combination": ["capability_plateau"],
+            "token_cost": ["flat"],
+            "capability_plateau_after_18_months": [False],
+            "hardware": ["cloud_api_only"],
+            "service_provider": ["global_service"],
+            "efficiency_gain_risk_stddev": [0.1],
+            "median_efficiency_gain": [0.2],
+        }
+    )
+    output = tmp_path / "pareto.md"
+    write_pareto_markdown_table(points, output)
+    text = output.read_text()
+    assert "shocks: capability_plateau" in text
+    assert "flat;" not in text
+    assert "continuous capability growth" not in text
+
+
+def test_monthly_period_scaling_and_annualized_pareto_labels(tmp_path):
+    monthly = SimulationConfig(resolution_months=1)
+    quarterly = SimulationConfig(resolution_months=3)
+    assert monthly.annualization_factor == 12.0
+    assert quarterly.annualization_factor == 4.0
+
+    points = pd.DataFrame(
+        {
+            "company_profile": ["mixed"],
+            "users": [50],
+            "shock_combination": ["none"],
+            "token_cost": ["flat"],
+            "capability_plateau_after_18_months": [False],
+            "hardware": ["cloud_api_only"],
+            "service_provider": ["global_service"],
+            "median_annualized_return_rate": [0.8],
+            "annualized_return_rate_risk_stddev": [0.2],
+            "efficiency_gain_risk_stddev": [0.1],
+            "median_efficiency_gain": [0.2],
+        }
+    )
+    output = tmp_path / "annualized_pareto.md"
+    write_pareto_markdown_table(points, output)
+    text = output.read_text()
+    assert "annualized return rate" in text
+    assert "Global API (0.800, 0.200)" in text
+    assert "cloud_api_only / cloud" not in text

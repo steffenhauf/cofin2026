@@ -122,6 +122,16 @@ MODEL_SCENARIOS = {
     "oss_plateau_lagged": {"kind": "oss", "growth": False, "lag_months": 4},
 }
 
+SHOCK_SCENARIOS = (
+    "sudden_break_even",
+    "gradual_break_even",
+    "capability_plateau",
+)
+SHOCK_COMBINATIONS = ("none",) + tuple(
+    ",".join(name for index, name in enumerate(SHOCK_SCENARIOS) if mask & (1 << index))
+    for mask in range(1, 1 << len(SHOCK_SCENARIOS))
+)
+
 SERVICE_PROVIDERS = {
     "global_service": {
         "capability_lag_months": 0,
@@ -219,6 +229,10 @@ _HARDWARE_BENCHMARKS: pd.DataFrame | None = None
 USD_PER_HARDWARE_CAPEX_INDEX_DEFAULT = (
     HARDWARE_CALIBRATIONS["h100-gemma4-31b"]["target_unit_usd"] / HARDWARE_SCENARIOS["onprem_10pct_capacity"]["capex_units"]
 )
+MONTHS_PER_YEAR = 12
+HARDWARE_AMORTIZATION_MONTHS = 36
+MAX_CONFIDENTIAL_DOCUMENT_FRACTION = 0.90
+DEFAULT_COUNTERFACTUAL_SKILL_GROWTH_RATE_PER_YEAR = 0.015
 DEFAULT_CONCURRENCY = max(1, os.cpu_count() or 1)
 # TVöD Bund E 12, step 3, from May 2026; employer-cost uplift is an explicit estimate.
 TVOD_E12_STEP3_MONTHLY_GROSS_EUR = 5359.50
@@ -245,6 +259,9 @@ class SimulationConfig:
     max_monthly_service_budget_usd: float | None = None
     max_upfront_hardware_budget_usd: float | None = None
     confidential_document_fraction: float = 0.0
+    zero_risk_confidential_work_share: float = 0.20
+    counterfactual_skill_growth_enabled: bool = True
+    counterfactual_skill_growth_rate_per_year: float = DEFAULT_COUNTERFACTUAL_SKILL_GROWTH_RATE_PER_YEAR
     usd_per_service_cost_index_quarter: float = 60.0
     usd_per_hardware_capex_index: float = USD_PER_HARDWARE_CAPEX_INDEX_DEFAULT
     hardware_calibration: str = "h100-gemma4-31b"
@@ -262,6 +279,11 @@ class SimulationConfig:
     zero_risk_feature_gain: float = 0.005
     embargo_shock_probability: float = 0.05
     embargo_rollback_months: int = 6
+    stochastic_shocks: bool = False
+    shock_combination: str = "none"
+    sudden_break_even_probability_per_month: float = 0.01
+    gradual_break_even_probability_per_month: float = 0.01
+    capability_plateau_probability_per_month: float = 0.01
     confidential_mixing_ratio: float = 0.5
     confidential_mixing_penalty: float = 0.5
     cloud_oss_hours_per_usage_unit_period: float | None = None
@@ -274,18 +296,30 @@ class SimulationConfig:
 
     @property
     def periods(self) -> int:
-        return int(round(self.years * 12 / self.resolution_months))
+        return int(round(self.years * MONTHS_PER_YEAR / self.resolution_months))
+
+    @property
+    def months_per_period(self) -> int:
+        return self.resolution_months
+
+    @property
+    def period_fraction_of_year(self) -> float:
+        return self.months_per_period / MONTHS_PER_YEAR
+
+    @property
+    def annualization_factor(self) -> float:
+        return 1.0 / self.period_fraction_of_year
 
     @property
     def quarters_per_period(self) -> float:
-        return self.resolution_months / 3
+        return self.months_per_period / 3
 
     @property
     def service_budget_per_period(self) -> float | None:
         monthly_budget_index = self.monthly_service_budget_index
         if monthly_budget_index is None:
             return None
-        return monthly_budget_index * self.resolution_months
+        return monthly_budget_index * self.months_per_period
 
     @property
     def monthly_service_budget_index(self) -> float | None:
@@ -300,6 +334,22 @@ class SimulationConfig:
         if self.max_upfront_hardware_budget_usd is not None:
             return self.max_upfront_hardware_budget_usd / max(1e-9, self.usd_per_hardware_capex_index)
         return self.max_upfront_hardware_budget
+
+    @property
+    def effective_confidential_document_fraction(self) -> float:
+        return float(np.clip(self.confidential_document_fraction, 0.0, MAX_CONFIDENTIAL_DOCUMENT_FRACTION))
+
+
+def _counterfactual_gain_discount(period: int, config: SimulationConfig) -> float:
+    if not config.counterfactual_skill_growth_enabled:
+        return 1.0
+    elapsed_years = period * config.period_fraction_of_year
+    return (1.0 + config.counterfactual_skill_growth_rate_per_year) ** (-elapsed_years)
+
+
+def _zero_risk_gain_access_multiplier(config: SimulationConfig) -> float:
+    confidential_share = config.effective_confidential_document_fraction
+    return 1.0 - confidential_share * (1.0 - config.zero_risk_confidential_work_share)
 
 
 def _employee_types(config: SimulationConfig) -> pd.DataFrame:
@@ -407,13 +457,14 @@ def _capability_multiplier(
     plateau_quarter: int,
     resolution_months: int,
     capability_lag_months: float = 0.0,
+    force_plateau: bool = False,
 ) -> float:
     model = MODEL_SCENARIOS[model_name]
     effective_period = max(
         0.0,
         (period * resolution_months - model["lag_months"] - capability_lag_months) / 3.0,
     )
-    if not model["growth"]:
+    if not model["growth"] or force_plateau:
         effective_period = min(effective_period, plateau_quarter)
 
     quarterly_growth = 1.085
@@ -429,6 +480,7 @@ def _service_capability_multiplier(
     resolution_months: int,
     embargo_shock: bool,
     config: SimulationConfig,
+    force_plateau: bool = False,
 ) -> float:
     provider = SERVICE_PROVIDERS[provider_name]
     lag_months = provider["capability_lag_months"]
@@ -440,6 +492,7 @@ def _service_capability_multiplier(
         plateau_quarter,
         resolution_months,
         lag_months,
+        force_plateau,
     )
 
 
@@ -453,12 +506,33 @@ def _token_cost_multiplier(period: int, token_scenario: str, periods: int) -> fl
     raise ValueError(f"Unknown token scenario: {token_scenario}")
 
 
+def _period_probability(probability_per_month: float, resolution_months: int) -> float:
+    return 1.0 - (1.0 - probability_per_month) ** resolution_months
+
+
+def _shock_enabled(shock_combination: str, shock_name: str) -> bool:
+    return shock_combination != "none" and shock_name in shock_combination.split(",")
+
+
+def _stochastic_token_cost(
+    period: int,
+    periods: int,
+    sudden_active: bool,
+    gradual_start_period: int | None,
+) -> float:
+    if sudden_active:
+        return 1.85
+    if gradual_start_period is None:
+        return 1.0
+    return 1.0 + 0.85 * (period - gradual_start_period) / max(1, periods - 1 - gradual_start_period)
+
+
 def _it_support_cost_index(hardware_name: str, config: SimulationConfig) -> float:
     if not config.it_support_enabled or hardware_name not in ("onprem_10pct_capacity", "onprem_50pct_capacity", "onprem_full_capacity", "onprem_low_30pct_utilization", "cloud_oss"):
         return 0.0
     if config.users > config.it_support_max_users:
         return 0.0
-    monthly_cost = config.it_support_monthly_cost_eur * config.resolution_months
+    monthly_cost = config.it_support_monthly_cost_eur * config.months_per_period
     return float(monthly_cost / config.usd_per_service_cost_index_quarter)
 
 
@@ -488,8 +562,8 @@ def _hardware_adjustments(
     priority = 0.25 + users_df["wait_tolerance"].to_numpy(float)
     use_multiplier = np.minimum(1.0, available_slots * priority / max(1e-9, float(priority.sum())))
 
-    amortization_periods = max(1.0, 36 / config.resolution_months)
-    hardware_cost = upfront_hardware_cost * hardware_budget_scale / amortization_periods + it_support_cost
+    amortization_fraction = min(1.0, config.months_per_period / HARDWARE_AMORTIZATION_MONTHS)
+    hardware_cost = upfront_hardware_cost * hardware_budget_scale * amortization_fraction + it_support_cost
     hardware_bonus = 1.0 + (refresh["capability_bonus"] - 1.0) * hardware_budget_scale
     return (
         np.clip(use_multiplier, 0.0, 1.0),
@@ -527,7 +601,7 @@ def _cloud_oss_cost_index(
     benchmark = _hardware_benchmark(config, hardware_name)
     hours = config.cloud_oss_hours_per_usage_unit_period
     if hours is None:
-        hours = 24.0 * 30.4375 * config.resolution_months
+        hours = 24.0 * 30.4375 * config.months_per_period
     usd = (
         cloud_usage.sum()
         * float(benchmark["hourly_cloud_price_usd"])
@@ -629,7 +703,7 @@ def _effective_usage_with_local_fallback(
     service_provider_name: str,
     config: SimulationConfig,
 ) -> tuple[np.ndarray, np.ndarray, float, float, float, float, np.ndarray]:
-    confidential_requested = base_requested_usage * config.confidential_document_fraction
+    confidential_requested = base_requested_usage * config.effective_confidential_document_fraction
     non_confidential_requested = base_requested_usage - confidential_requested
     local_multiplier, fallback_multiplier = _local_hardware_multiplier(
         wait_multiplier, wait_tolerance, hardware_name, hardware_budget_scale, local_fallback_policy
@@ -705,13 +779,17 @@ def _resolve_backend(backend: str) -> str:
     raise ValueError(f"Unknown backend: {backend}")
 
 
-def _simulate_one_scenario(args: tuple[str, str, str, str, str, str, str, SimulationConfig, int]) -> pd.DataFrame:
+def _simulate_one_scenario(args: tuple) -> pd.DataFrame:
     if args[2] != "cloud_oss" and config_backend(args) == "torch-mps":
         return _simulate_one_scenario_torch_mps(args)
     if args[2] != "cloud_oss" and config_backend(args) == "numba":
         return _simulate_one_scenario_numba(args)
 
-    model_name, token_name, hardware_name, refresh_name, access_plan_name, local_fallback_policy, service_provider_name, config, scenario_seed = args
+    model_name, token_name, hardware_name, refresh_name, access_plan_name, local_fallback_policy, service_provider_name, config, scenario_seed = args[:9]
+    shock_combination = args[9] if len(args) > 9 else "none"
+    sudden_enabled = config.stochastic_shocks and _shock_enabled(shock_combination, "sudden_break_even")
+    gradual_enabled = config.stochastic_shocks and _shock_enabled(shock_combination, "gradual_break_even")
+    plateau_enabled = config.stochastic_shocks and _shock_enabled(shock_combination, "capability_plateau")
     rng = np.random.default_rng(scenario_seed)
     run_rows = []
 
@@ -719,22 +797,43 @@ def _simulate_one_scenario(args: tuple[str, str, str, str, str, str, str, Simula
         users_df = _sample_users(rng, config.users, config)
         previous_return = None
         return_changes: list[float] = []
+        sudden_active = False
+        gradual_start_period: int | None = None
+        shock_plateau_quarter: float | None = None
 
         for period in range(config.periods):
+            gain_discount = _counterfactual_gain_discount(period, config)
+            zero_risk_access_multiplier = _zero_risk_gain_access_multiplier(config)
             embargo_shock = bool(
                 service_provider_name == "global_service"
                 and rng.random() < config.embargo_shock_probability
             )
+            if sudden_enabled and not sudden_active and rng.random() < _period_probability(config.sudden_break_even_probability_per_month, config.resolution_months):
+                sudden_active = True
+            if gradual_enabled and gradual_start_period is None and rng.random() < _period_probability(config.gradual_break_even_probability_per_month, config.resolution_months):
+                gradual_start_period = period
+            if plateau_enabled and shock_plateau_quarter is None and rng.random() < _period_probability(config.capability_plateau_probability_per_month, config.resolution_months):
+                provider_lag = SERVICE_PROVIDERS[service_provider_name]["capability_lag_months"]
+                rollback = config.embargo_rollback_months if embargo_shock and SERVICE_PROVIDERS[service_provider_name]["embargo_affected"] else 0
+                shock_plateau_quarter = max(
+                    0.0,
+                    (period * config.resolution_months - MODEL_SCENARIOS[model_name]["lag_months"] - provider_lag - rollback) / 3.0,
+                )
             capability = _service_capability_multiplier(
                 period,
                 model_name,
                 service_provider_name,
-                config.plateau_quarter,
+                config.plateau_quarter if shock_plateau_quarter is None else shock_plateau_quarter,
                 config.resolution_months,
                 embargo_shock,
                 config,
+                shock_plateau_quarter is not None,
             )
-            token_cost = _token_cost_multiplier(period, TOKEN_SCENARIOS[token_name], config.periods)
+            token_cost = (
+                _stochastic_token_cost(period, config.periods, sudden_active, gradual_start_period)
+                if config.stochastic_shocks
+                else _token_cost_multiplier(period, TOKEN_SCENARIOS[token_name], config.periods)
+            )
             (
                 wait_multiplier,
                 hardware_cost,
@@ -794,24 +893,31 @@ def _simulate_one_scenario(args: tuple[str, str, str, str, str, str, str, Simula
                 sampled_gains,
                 config.ai_gain_min * gain_scale,
                 config.ai_gain_max * gain_scale,
-            ) * active * improved * delivered_usage_multiplier * confidential_penalty
-            zero_risk_gain = config.zero_risk_feature_gain * gain_scale * users_df["adoption_mean"].to_numpy(float)
+            ) * active * improved * delivered_usage_multiplier * confidential_penalty * gain_discount
+            zero_risk_gain = (
+                config.zero_risk_feature_gain
+                * gain_scale
+                * users_df["adoption_mean"].to_numpy(float)
+                * zero_risk_access_multiplier
+                * gain_discount
+            )
             realized_gain = zero_risk_gain + ai_realized_gain
             efficiency_index = 1.0 + realized_gain
 
             total_cost = cloud_cost + hardware_cost
             mean_gain = float(np.mean(efficiency_index - 1.0))
             cost_per_increment = total_cost / max(1e-9, np.sum(efficiency_index - 1.0))
-            return_rate = mean_gain / max(1e-9, total_cost / config.users)
+            return_rate = mean_gain / (total_cost / config.users) if total_cost > 1e-9 else np.nan
+            annualized_return_rate = return_rate * config.annualization_factor
 
-            if previous_return is not None:
+            if previous_return is not None and np.isfinite(return_rate) and np.isfinite(previous_return):
                 return_changes.append(return_rate - previous_return)
             previous_return = return_rate
             risk = float(np.std(return_changes, ddof=1)) if len(return_changes) > 1 else 0.0
 
             run_rows.append(
                 {
-                    "scenario": f"{model_name}|{token_name}|{access_plan_name}|{hardware_name}|{refresh_name}|{local_fallback_policy}|{service_provider_name}",
+                    "scenario": f"{model_name}|{token_name}|{access_plan_name}|{hardware_name}|{refresh_name}|{local_fallback_policy}|{service_provider_name}|{shock_combination}",
                     "model": model_name,
                     "token_cost": token_name,
                     "access_plan": access_plan_name,
@@ -819,7 +925,11 @@ def _simulate_one_scenario(args: tuple[str, str, str, str, str, str, str, Simula
                     "hardware_refresh": refresh_name,
                     "local_fallback": local_fallback_policy,
                     "service_provider": service_provider_name,
+                    "shock_combination": shock_combination,
                     "embargo_shock": embargo_shock,
+                    "sudden_break_even_shock": sudden_active,
+                    "gradual_break_even_shock": gradual_start_period is not None,
+                    "capability_plateau_shock": shock_plateau_quarter is not None,
                     "backend": config.backend,
                     "run": run,
                     "period": period,
@@ -843,7 +953,9 @@ def _simulate_one_scenario(args: tuple[str, str, str, str, str, str, str, Simula
                     "total_cost_index": float(total_cost),
                     "cost_per_efficiency_increment": float(cost_per_increment),
                     "return_rate": float(return_rate),
+                    "annualized_return_rate": float(annualized_return_rate),
                     "risk": risk,
+                    "annualized_risk": risk * config.annualization_factor,
                 }
             )
 
@@ -915,6 +1027,9 @@ def _numba_simulator():
         improvement_draws: np.ndarray,
         normal_draws: np.ndarray,
         embargo_draws: np.ndarray,
+        sudden_break_even_draws: np.ndarray,
+        gradual_break_even_draws: np.ndarray,
+        capability_plateau_draws: np.ndarray,
         model_growth: int,
         model_lag: float,
         plateau_quarter: int,
@@ -942,6 +1057,9 @@ def _numba_simulator():
         ai_gain_min: float,
         ai_gain_max: float,
         zero_risk_feature_gain: float,
+        counterfactual_skill_growth_enabled: int,
+        counterfactual_skill_growth_rate_per_year: float,
+        zero_risk_confidential_access_multiplier: float,
         provider_capability_lag_months: float,
         provider_embargo_affected: int,
         provider_handles_confidential: int,
@@ -949,16 +1067,43 @@ def _numba_simulator():
         embargo_rollback_months: int,
         confidential_mixing_ratio: float,
         confidential_mixing_penalty: float,
+        stochastic_shocks: int,
+        sudden_enabled: int,
+        gradual_enabled: int,
+        plateau_enabled: int,
+        sudden_break_even_probability_per_month: float,
+        gradual_break_even_probability_per_month: float,
+        capability_plateau_probability_per_month: float,
     ) -> np.ndarray:
         periods, users = adoption_draws.shape
-        metrics = np.empty((periods, 20), dtype=np.float64)
-        previous_return = 0.0
+        metrics = np.empty((periods, 23), dtype=np.float64)
+        previous_return = np.nan
         change_count = 0
         change_mean = 0.0
         change_m2 = 0.0
+        sudden_active = 0
+        gradual_start_period = -1
+        shock_plateau_quarter = -1.0
 
         for period in range(periods):
+            gain_discount = 1.0
+            if counterfactual_skill_growth_enabled == 1:
+                gain_discount = (1.0 + counterfactual_skill_growth_rate_per_year) ** (-(period * resolution_months / 12.0))
             embargo_shock = provider_embargo_affected == 1 and embargo_draws[period] < embargo_shock_probability
+            if stochastic_shocks == 1:
+                period_sudden_probability = 1.0 - (1.0 - sudden_break_even_probability_per_month) ** resolution_months
+                period_gradual_probability = 1.0 - (1.0 - gradual_break_even_probability_per_month) ** resolution_months
+                period_plateau_probability = 1.0 - (1.0 - capability_plateau_probability_per_month) ** resolution_months
+                if sudden_enabled == 1 and sudden_active == 0 and sudden_break_even_draws[period] < period_sudden_probability:
+                    sudden_active = 1
+                if gradual_enabled == 1 and gradual_start_period < 0 and gradual_break_even_draws[period] < period_gradual_probability:
+                    gradual_start_period = period
+                if plateau_enabled == 1 and shock_plateau_quarter < 0.0 and capability_plateau_draws[period] < period_plateau_probability:
+                    rollback = embargo_rollback_months if embargo_shock and provider_embargo_affected == 1 else 0
+                    shock_plateau_quarter = max(
+                        0.0,
+                        (period * resolution_months - model_lag - provider_capability_lag_months - rollback) / 3.0,
+                    )
             effective_period = (
                 period * resolution_months - model_lag - provider_capability_lag_months
             ) / 3.0
@@ -966,15 +1111,25 @@ def _numba_simulator():
                 effective_period -= embargo_rollback_months / 3.0
             if effective_period < 0:
                 effective_period = 0
-            if model_growth == 0 and effective_period > plateau_quarter:
-                effective_period = plateau_quarter
+            effective_plateau_quarter = plateau_quarter
+            if shock_plateau_quarter >= 0.0:
+                effective_plateau_quarter = shock_plateau_quarter
+            if (model_growth == 0 or shock_plateau_quarter >= 0.0) and effective_period > effective_plateau_quarter:
+                effective_period = effective_plateau_quarter
 
             capability = 1.085**effective_period
             if capability > 2.60:
                 capability = 2.60
             effective_capability = capability * scenario_capability_multiplier
 
-            if token_mode == 0:
+            if stochastic_shocks == 1:
+                if sudden_active == 1:
+                    token_cost = 1.85
+                elif gradual_start_period >= 0:
+                    token_cost = 1.0 + 0.85 * (period - gradual_start_period) / max(1, periods - 1 - gradual_start_period)
+                else:
+                    token_cost = 1.0
+            elif token_mode == 0:
                 token_cost = 1.0
             elif token_mode == 1:
                 token_cost = 1.0 + 0.85 * period / max(1, periods - 1)
@@ -1132,20 +1287,20 @@ def _numba_simulator():
                 if base_requested_usage > 0.0:
                     access_multiplier = effective_usage / base_requested_usage
 
-                ai_realized_gain = sampled_gain * (1.0 if active else 0.0) * (1.0 if improved else 0.0) * access_multiplier * confidential_penalty
+                ai_realized_gain = sampled_gain * (1.0 if active else 0.0) * (1.0 if improved else 0.0) * access_multiplier * confidential_penalty * gain_discount
                 total_ai_gain += ai_realized_gain
                 if ai_realized_gain < 0.0:
                     negative_ai_gain_count += 1.0
-                zero_risk_gain_sum += zero_risk_feature_gain * resolution_months / 12.0 * adoption_mean[user]
+                zero_risk_gain_sum += zero_risk_feature_gain * resolution_months / 12.0 * adoption_mean[user] * zero_risk_confidential_access_multiplier * gain_discount
 
             total_cost = cloud_cost + hardware_cost
             total_realized_gain = total_ai_gain + zero_risk_gain_sum
             mean_gain = total_realized_gain / users
             cost_per_increment = total_cost / max(1e-9, total_realized_gain)
-            return_rate = mean_gain / max(1e-9, total_cost / users)
+            return_rate = mean_gain / (total_cost / users) if total_cost > 1e-9 else np.nan
 
             risk = 0.0
-            if period > 0:
+            if not np.isnan(return_rate) and not np.isnan(previous_return):
                 change = return_rate - previous_return
                 change_count += 1
                 delta = change - change_mean
@@ -1175,6 +1330,9 @@ def _numba_simulator():
             metrics[period, 17] = total_ai_gain / users
             metrics[period, 18] = negative_ai_gain_count / users
             metrics[period, 19] = 1.0 if embargo_shock else 0.0
+            metrics[period, 20] = 1.0 if sudden_active == 1 else 0.0
+            metrics[period, 21] = 1.0 if gradual_start_period >= 0 else 0.0
+            metrics[period, 22] = 1.0 if shock_plateau_quarter >= 0.0 else 0.0
             # return_rate and risk are appended separately to keep the compact matrix small.
 
         return metrics
@@ -1182,8 +1340,9 @@ def _numba_simulator():
     return simulate_run
 
 
-def _simulate_one_scenario_numba(args: tuple[str, str, str, str, str, str, str, SimulationConfig, int]) -> pd.DataFrame:
-    model_name, token_name, hardware_name, refresh_name, access_plan_name, local_fallback_policy, service_provider_name, config, scenario_seed = args
+def _simulate_one_scenario_numba(args: tuple) -> pd.DataFrame:
+    model_name, token_name, hardware_name, refresh_name, access_plan_name, local_fallback_policy, service_provider_name, config, scenario_seed = args[:9]
+    shock_combination = args[9] if len(args) > 9 else "none"
     rng = np.random.default_rng(scenario_seed)
     users = config.users
     periods = config.periods
@@ -1195,7 +1354,7 @@ def _simulate_one_scenario_numba(args: tuple[str, str, str, str, str, str, str, 
     token_mode = _token_code(token_name)
     access_plan_mode = _access_plan_code(access_plan_name)
     local_fallback_default = _local_fallback_policy_code(local_fallback_policy)
-    scenario_label = f"{model_name}|{token_name}|{access_plan_name}|{hardware_name}|{refresh_name}|{local_fallback_policy}|{service_provider_name}"
+    scenario_label = f"{model_name}|{token_name}|{access_plan_name}|{hardware_name}|{refresh_name}|{local_fallback_policy}|{service_provider_name}|{shock_combination}"
     total_rows = config.runs * periods
     hardware_is_cloud = 1 if hardware_name == "cloud_api_only" else 0
 
@@ -1208,6 +1367,7 @@ def _simulate_one_scenario_numba(args: tuple[str, str, str, str, str, str, str, 
         "hardware_refresh": np.full(total_rows, refresh_name, dtype=object),
         "local_fallback": np.full(total_rows, local_fallback_policy, dtype=object),
         "service_provider": np.full(total_rows, service_provider_name, dtype=object),
+        "shock_combination": np.full(total_rows, shock_combination, dtype=object),
         "backend": np.full(total_rows, "numba", dtype=object),
         "run": np.empty(total_rows, dtype=np.int64),
         "period": np.empty(total_rows, dtype=np.int64),
@@ -1231,8 +1391,13 @@ def _simulate_one_scenario_numba(args: tuple[str, str, str, str, str, str, str, 
         "total_cost_index": np.empty(total_rows, dtype=np.float64),
         "cost_per_efficiency_increment": np.empty(total_rows, dtype=np.float64),
         "return_rate": np.empty(total_rows, dtype=np.float64),
+        "annualized_return_rate": np.empty(total_rows, dtype=np.float64),
         "risk": np.empty(total_rows, dtype=np.float64),
+        "annualized_risk": np.empty(total_rows, dtype=np.float64),
         "embargo_shock": np.empty(total_rows, dtype=np.float64),
+        "sudden_break_even_shock": np.empty(total_rows, dtype=np.float64),
+        "gradual_break_even_shock": np.empty(total_rows, dtype=np.float64),
+        "capability_plateau_shock": np.empty(total_rows, dtype=np.float64),
     }
 
     for run in range(config.runs):
@@ -1252,6 +1417,9 @@ def _simulate_one_scenario_numba(args: tuple[str, str, str, str, str, str, str, 
         improvement_draws = rng.random((periods, users))
         normal_draws = rng.normal(size=(periods, users))
         embargo_draws = rng.random(periods)
+        sudden_break_even_draws = rng.random(periods)
+        gradual_break_even_draws = rng.random(periods)
+        capability_plateau_draws = rng.random(periods)
         provider = SERVICE_PROVIDERS[service_provider_name]
         metrics = simulate_run(
             adoption_propensity,
@@ -1267,6 +1435,9 @@ def _simulate_one_scenario_numba(args: tuple[str, str, str, str, str, str, str, 
             improvement_draws,
             normal_draws,
             embargo_draws,
+            sudden_break_even_draws,
+            gradual_break_even_draws,
+            capability_plateau_draws,
             model_growth,
             model_lag,
             config.plateau_quarter,
@@ -1277,7 +1448,7 @@ def _simulate_one_scenario_numba(args: tuple[str, str, str, str, str, str, str, 
             config.base_cost_index_per_active_user_quarter,
             config.quarters_per_period,
             -1.0 if service_budget_per_period is None else service_budget_per_period,
-            config.confidential_document_fraction,
+            config.effective_confidential_document_fraction,
             hardware_is_cloud,
             local_fallback_default,
             scenario_capability_multiplier,
@@ -1294,6 +1465,9 @@ def _simulate_one_scenario_numba(args: tuple[str, str, str, str, str, str, str, 
             config.ai_gain_min,
             config.ai_gain_max,
             config.zero_risk_feature_gain,
+            1 if config.counterfactual_skill_growth_enabled else 0,
+            config.counterfactual_skill_growth_rate_per_year,
+            _zero_risk_gain_access_multiplier(config),
             provider["capability_lag_months"],
             1 if provider["embargo_affected"] else 0,
             1 if provider["confidential_capacity_share"] >= 0.999999 else 0,
@@ -1301,6 +1475,13 @@ def _simulate_one_scenario_numba(args: tuple[str, str, str, str, str, str, str, 
             config.embargo_rollback_months,
             config.confidential_mixing_ratio,
             config.confidential_mixing_penalty,
+            1 if config.stochastic_shocks else 0,
+            1 if _shock_enabled(shock_combination, "sudden_break_even") else 0,
+            1 if _shock_enabled(shock_combination, "gradual_break_even") else 0,
+            1 if _shock_enabled(shock_combination, "capability_plateau") else 0,
+            config.sudden_break_even_probability_per_month,
+            config.gradual_break_even_probability_per_month,
+            config.capability_plateau_probability_per_month,
         )
 
         row_slice = slice(run * periods, (run + 1) * periods)
@@ -1314,6 +1495,9 @@ def _simulate_one_scenario_numba(args: tuple[str, str, str, str, str, str, str, 
         data["mean_ai_efficiency_gain"][row_slice] = metrics[:, 17]
         data["negative_ai_gain_share"][row_slice] = metrics[:, 18]
         data["embargo_shock"][row_slice] = metrics[:, 19]
+        data["sudden_break_even_shock"][row_slice] = metrics[:, 20]
+        data["gradual_break_even_shock"][row_slice] = metrics[:, 21]
+        data["capability_plateau_shock"][row_slice] = metrics[:, 22]
         data["active_user_share"][row_slice] = metrics[:, 5]
         data["delivered_usage_share"][row_slice] = metrics[:, 6]
         data["confidential_usage_share"][row_slice] = metrics[:, 7]
@@ -1326,15 +1510,24 @@ def _simulate_one_scenario_numba(args: tuple[str, str, str, str, str, str, str, 
         data["hardware_cost_index"][row_slice] = hardware_cost
         data["total_cost_index"][row_slice] = metrics[:, 14]
         data["cost_per_efficiency_increment"][row_slice] = metrics[:, 15]
-        data["return_rate"][row_slice] = metrics[:, 4] / np.maximum(1e-9, metrics[:, 14] / users)
+        data["return_rate"][row_slice] = np.divide(
+            metrics[:, 4],
+            metrics[:, 14] / users,
+            out=np.full(periods, np.nan, dtype=np.float64),
+            where=metrics[:, 14] > 1e-9,
+        )
+        data["annualized_return_rate"][row_slice] = data["return_rate"][row_slice] * config.annualization_factor
 
         run_returns = data["return_rate"][row_slice]
         run_risk = np.zeros(periods, dtype=np.float64)
         if periods > 2:
             deltas = np.diff(run_returns)
             for idx in range(2, periods):
-                run_risk[idx] = float(np.std(deltas[:idx], ddof=1))
+                finite_deltas = deltas[:idx][np.isfinite(deltas[:idx])]
+                if len(finite_deltas) > 1:
+                    run_risk[idx] = float(np.std(finite_deltas, ddof=1))
         data["risk"][row_slice] = run_risk
+        data["annualized_risk"][row_slice] = run_risk * config.annualization_factor
 
     return pd.DataFrame(data)
 
@@ -1343,8 +1536,9 @@ def config_backend(args: tuple[str, str, str, str, str, str, str, SimulationConf
     return args[7].backend
 
 
-def _simulate_one_scenario_torch_mps(args: tuple[str, str, str, str, str, str, str, SimulationConfig, int]) -> pd.DataFrame:
-    model_name, token_name, hardware_name, refresh_name, access_plan_name, local_fallback_policy, service_provider_name, config, scenario_seed = args
+def _simulate_one_scenario_torch_mps(args: tuple) -> pd.DataFrame:
+    model_name, token_name, hardware_name, refresh_name, access_plan_name, local_fallback_policy, service_provider_name, config, scenario_seed = args[:9]
+    shock_combination = args[9] if len(args) > 9 else "none"
     torch, device = _torch_module_and_device()
     rng = np.random.default_rng(scenario_seed)
     run_rows = []
@@ -1371,20 +1565,50 @@ def _simulate_one_scenario_torch_mps(args: tuple[str, str, str, str, str, str, s
 
         previous_return = None
         return_changes: list[float] = []
+        sudden_active = False
+        gradual_start_period: int | None = None
+        shock_plateau_quarter: float | None = None
 
         for period in range(config.periods):
+            gain_discount = _counterfactual_gain_discount(period, config)
+            zero_risk_access_multiplier = _zero_risk_gain_access_multiplier(config)
             period_seed = scenario_seed + run * 100003 + period
             cpu_generator = torch.Generator(device="cpu").manual_seed(period_seed)
             embargo_shock = bool(service_provider_name == "global_service" and np.random.default_rng(period_seed + 17).random() < config.embargo_shock_probability)
-            capability = _service_capability_multiplier(period, model_name, service_provider_name, config.plateau_quarter, config.resolution_months, embargo_shock, config)
-            token_cost = _token_cost_multiplier(period, TOKEN_SCENARIOS[token_name], config.periods)
+            shock_rng = np.random.default_rng(period_seed + 31)
+            if config.stochastic_shocks and _shock_enabled(shock_combination, "sudden_break_even") and not sudden_active and shock_rng.random() < _period_probability(config.sudden_break_even_probability_per_month, config.resolution_months):
+                sudden_active = True
+            if config.stochastic_shocks and _shock_enabled(shock_combination, "gradual_break_even") and gradual_start_period is None and shock_rng.random() < _period_probability(config.gradual_break_even_probability_per_month, config.resolution_months):
+                gradual_start_period = period
+            if config.stochastic_shocks and _shock_enabled(shock_combination, "capability_plateau") and shock_plateau_quarter is None and shock_rng.random() < _period_probability(config.capability_plateau_probability_per_month, config.resolution_months):
+                provider = SERVICE_PROVIDERS[service_provider_name]
+                rollback = config.embargo_rollback_months if embargo_shock and provider["embargo_affected"] else 0
+                shock_plateau_quarter = max(
+                    0.0,
+                    (period * config.resolution_months - MODEL_SCENARIOS[model_name]["lag_months"] - provider["capability_lag_months"] - rollback) / 3.0,
+                )
+            capability = _service_capability_multiplier(
+                period,
+                model_name,
+                service_provider_name,
+                config.plateau_quarter if shock_plateau_quarter is None else shock_plateau_quarter,
+                config.resolution_months,
+                embargo_shock,
+                config,
+                shock_plateau_quarter is not None,
+            )
+            token_cost = (
+                _stochastic_token_cost(period, config.periods, sudden_active, gradual_start_period)
+                if config.stochastic_shocks
+                else _token_cost_multiplier(period, TOKEN_SCENARIOS[token_name], config.periods)
+            )
             effective_capability = capability * scenario_capability_multiplier
 
             adoption_multiplier = 1.0 + config.adoption_capability_elasticity * (capability - 1.0)
             adoption_prob = torch.clamp(adoption_propensity * adoption_multiplier, 0.02, 0.98)
             active = torch.rand(config.users, generator=cpu_generator).to(device) < adoption_prob
             base_requested_usage = usage_intensity * active.to(torch.float32)
-            confidential_requested = base_requested_usage * config.confidential_document_fraction
+            confidential_requested = base_requested_usage * config.effective_confidential_document_fraction
             non_confidential_requested = base_requested_usage - confidential_requested
             access_multiplier, cloud_cost, topup_cost, exhausted_share = _apply_access_plan_torch(
                 non_confidential_requested,
@@ -1454,8 +1678,15 @@ def _simulate_one_scenario_torch_mps(args: tuple[str, str, str, str, str, str, s
                     0.0,
                     1.0,
                 )
+                * gain_discount
             )
-            zero_risk_gain = config.zero_risk_feature_gain * gain_scale * adoption_mean
+            zero_risk_gain = (
+                config.zero_risk_feature_gain
+                * gain_scale
+                * adoption_mean
+                * zero_risk_access_multiplier
+                * gain_discount
+            )
             realized_gain = zero_risk_gain + ai_realized_gain
             efficiency_index = 1.0 + realized_gain
 
@@ -1466,16 +1697,17 @@ def _simulate_one_scenario_torch_mps(args: tuple[str, str, str, str, str, str, s
             effective_usage_sum = float(torch.sum(effective_usage).cpu())
             confidential_requested_sum = float(torch.sum(confidential_requested).cpu())
             cost_per_increment = total_cost / max(1e-9, total_gain)
-            return_rate = mean_gain / max(1e-9, total_cost / config.users)
+            return_rate = mean_gain / (total_cost / config.users) if total_cost > 1e-9 else np.nan
+            annualized_return_rate = return_rate * config.annualization_factor
 
-            if previous_return is not None:
+            if previous_return is not None and np.isfinite(return_rate) and np.isfinite(previous_return):
                 return_changes.append(return_rate - previous_return)
             previous_return = return_rate
             risk = float(np.std(return_changes, ddof=1)) if len(return_changes) > 1 else 0.0
 
             run_rows.append(
                 {
-                    "scenario": f"{model_name}|{token_name}|{access_plan_name}|{hardware_name}|{refresh_name}|{local_fallback_policy}|{service_provider_name}",
+                    "scenario": f"{model_name}|{token_name}|{access_plan_name}|{hardware_name}|{refresh_name}|{local_fallback_policy}|{service_provider_name}|{shock_combination}",
                     "model": model_name,
                     "token_cost": token_name,
                     "access_plan": access_plan_name,
@@ -1483,7 +1715,11 @@ def _simulate_one_scenario_torch_mps(args: tuple[str, str, str, str, str, str, s
                     "hardware_refresh": refresh_name,
                     "local_fallback": local_fallback_policy,
                     "service_provider": service_provider_name,
+                    "shock_combination": shock_combination,
                     "embargo_shock": embargo_shock,
+                    "sudden_break_even_shock": sudden_active,
+                    "gradual_break_even_shock": gradual_start_period is not None,
+                    "capability_plateau_shock": shock_plateau_quarter is not None,
                     "backend": "torch-mps",
                     "run": run,
                     "period": period,
@@ -1507,7 +1743,9 @@ def _simulate_one_scenario_torch_mps(args: tuple[str, str, str, str, str, str, s
                     "total_cost_index": float(total_cost),
                     "cost_per_efficiency_increment": float(cost_per_increment),
                     "return_rate": float(return_rate),
+                    "annualized_return_rate": float(annualized_return_rate),
                     "risk": risk,
+                    "annualized_risk": risk * config.annualization_factor,
                 }
             )
 
@@ -1575,25 +1813,33 @@ def _apply_service_budget_limit_torch(
     return delivered_usage * scale, budget, scale
 
 
-def scenario_grid() -> Iterable[tuple[str, str, str, str, str, str, str]]:
-    for model_name, token_name, hardware_name, refresh_name, access_plan_name in itertools.product(
-        MODEL_SCENARIOS.keys(),
-        TOKEN_SCENARIOS.keys(),
+def scenario_grid(stochastic_shocks: bool = False) -> Iterable[tuple[str, str, str, str, str, str, str, str]]:
+    model_names = (
+        tuple(name for name, specification in MODEL_SCENARIOS.items() if specification["growth"])
+        if stochastic_shocks
+        else tuple(MODEL_SCENARIOS)
+    )
+    token_names = ("flat",) if stochastic_shocks else tuple(TOKEN_SCENARIOS)
+    shock_combinations = SHOCK_COMBINATIONS if stochastic_shocks else ("none",)
+    for model_name, token_name, hardware_name, refresh_name, access_plan_name, shock_combination in itertools.product(
+        model_names,
+        token_names,
         HARDWARE_SCENARIOS.keys(),
         HARDWARE_REFRESH.keys(),
         ACCESS_PLANS.keys(),
+        shock_combinations,
     ):
         fallback_policies = ("persona_choice",) if hardware_name == "cloud_api_only" else LOCAL_FALLBACK_POLICIES
         for local_fallback_policy in fallback_policies:
             provider_names = ("local_hardware",) if hardware_name != "cloud_api_only" else ("global_service", "european_service")
             for service_provider_name in provider_names:
-                yield model_name, token_name, hardware_name, refresh_name, access_plan_name, local_fallback_policy, service_provider_name
+                yield model_name, token_name, hardware_name, refresh_name, access_plan_name, local_fallback_policy, service_provider_name, shock_combination
 
 
 def run_simulation(config: SimulationConfig) -> pd.DataFrame:
     scenario_args = [
-        (*scenario, config, config.seed + i * 1009)
-        for i, scenario in enumerate(scenario_grid())
+        (*scenario[:7], config, config.seed + i * 1009, scenario[7])
+        for i, scenario in enumerate(scenario_grid(config.stochastic_shocks))
     ]
 
     if config.concurrency <= 1:
@@ -1635,6 +1881,8 @@ def _parse_employee_mix(mix_arg: str | None) -> dict[str, float] | None:
 
 
 def _validate_budget_args(args: argparse.Namespace) -> None:
+    if args.resolution_months < 1:
+        raise SystemExit("--resolution-months must be at least 1.")
     if args.max_monthly_service_budget is not None and args.max_monthly_service_budget_usd is not None:
         raise SystemExit("Specify either --max-monthly-service-budget or --max-monthly-service-budget-usd, not both.")
     if args.max_upfront_hardware_budget is not None and args.max_upfront_hardware_budget_usd is not None:
@@ -1659,12 +1907,23 @@ def _validate_budget_args(args: argparse.Namespace) -> None:
         raise SystemExit("--embargo-shock-probability must be between 0 and 1.")
     if args.embargo_rollback_months < 0:
         raise SystemExit("--embargo-rollback-months must be non-negative.")
+    for option_name in (
+        "sudden_break_even_probability_per_month",
+        "gradual_break_even_probability_per_month",
+        "capability_plateau_probability_per_month",
+    ):
+        if not 0.0 <= getattr(args, option_name) <= 1.0:
+            raise SystemExit(f"--{option_name.replace('_', '-')} must be between 0 and 1.")
     if not 0.0 <= args.confidential_mixing_ratio <= 1.0:
         raise SystemExit("--confidential-mixing-ratio must be between 0 and 1.")
     if not 0.0 <= args.confidential_mixing_penalty <= 1.0:
         raise SystemExit("--confidential-mixing-penalty must be between 0 and 1.")
     if args.zero_risk_feature_gain < 0:
         raise SystemExit("--zero-risk-feature-gain must be non-negative.")
+    if not 0.0 <= args.zero_risk_confidential_work_share <= 1.0:
+        raise SystemExit("--zero-risk-confidential-work-share must be between 0 and 1.")
+    if args.counterfactual_skill_growth_rate_per_year < 0:
+        raise SystemExit("--counterfactual-skill-growth-rate-per-year must be non-negative.")
     if args.it_support_max_users < 0:
         raise SystemExit("--it-support-max-users must be non-negative.")
     if args.cloud_oss_hours_per_usage_unit_period is not None and args.cloud_oss_hours_per_usage_unit_period <= 0:
@@ -1681,6 +1940,7 @@ def summarize(results: pd.DataFrame) -> pd.DataFrame:
         "hardware_refresh",
         "local_fallback",
         "service_provider",
+        "shock_combination",
         "backend",
         "period",
         "month",
@@ -1691,6 +1951,9 @@ def summarize(results: pd.DataFrame) -> pd.DataFrame:
         "mean_ai_efficiency_gain",
         "negative_ai_gain_share",
         "embargo_shock",
+        "sudden_break_even_shock",
+        "gradual_break_even_shock",
+        "capability_plateau_shock",
         "active_user_share",
         "delivered_usage_share",
         "confidential_usage_share",
@@ -1704,7 +1967,9 @@ def summarize(results: pd.DataFrame) -> pd.DataFrame:
         "total_cost_index",
         "cost_per_efficiency_increment",
         "return_rate",
+        "annualized_return_rate",
         "risk",
+        "annualized_risk",
     ]
 
     rows = []
@@ -1725,19 +1990,19 @@ def fit_curves(summary: pd.DataFrame) -> pd.DataFrame:
     for scenario, group in summary.groupby("scenario", sort=False):
         group = group.sort_values("month")
         x = group["month"].to_numpy(float)
-        y = group["return_rate_mean"].to_numpy(float)
+        y = group["annualized_return_rate_mean"].to_numpy(float)
         smoothing = max(1e-8, len(x) * float(np.var(y)) * 0.03)
         spline = UnivariateSpline(x, y, s=smoothing, k=min(3, len(x) - 1))
         dense_x = np.linspace(float(x.min()), float(x.max()), 80)
         dense_y = spline(dense_x)
-        meta = group.iloc[0][["model", "token_cost", "access_plan", "hardware", "hardware_refresh", "backend"]].to_dict()
+        meta = group.iloc[0][["model", "token_cost", "access_plan", "hardware", "hardware_refresh", "shock_combination", "backend"]].to_dict()
         for month, fitted_return in zip(dense_x, dense_y, strict=True):
             fit_rows.append(
                 {
                     "scenario": scenario,
                     **meta,
                     "month": float(month),
-                    "fitted_return_rate": float(fitted_return),
+                    "fitted_annualized_return_rate": float(fitted_return),
                 }
             )
     return pd.DataFrame(fit_rows)
@@ -1746,7 +2011,7 @@ def fit_curves(summary: pd.DataFrame) -> pd.DataFrame:
 def _top_scenarios(summary: pd.DataFrame, limit: int = 10) -> list[str]:
     final_period = int(summary["period"].max())
     final = summary[summary["period"] == final_period].copy()
-    final = final.sort_values("return_rate_mean", ascending=False)
+    final = final.sort_values("annualized_return_rate_mean", ascending=False)
     return final["scenario"].head(limit).tolist()
 
 
@@ -1777,10 +2042,10 @@ def _plot_all_risk_return_slices(summary: pd.DataFrame, plots_dir: Path) -> None
 
     for ax, month in zip(axes_array, months, strict=False):
         group = summary[summary["month"] == month]
-        ax.scatter(group["risk_mean"], group["return_rate_mean"], s=16, alpha=0.60)
+        ax.scatter(group["annualized_risk_mean"], group["annualized_return_rate_mean"], s=16, alpha=0.60)
         ax.set_title(f"Month {month}")
-        ax.set_xlabel("Risk")
-        ax.set_ylabel("Return rate")
+        ax.set_xlabel("Annualized return-rate risk (SD)")
+        ax.set_ylabel("Mean annualized return rate")
 
     for ax in axes_array[len(months) :]:
         ax.axis("off")
@@ -1807,16 +2072,16 @@ def _plot_all_risk_return_slices_by_access(summary: pd.DataFrame, plots_dir: Pat
         for access_type, color in access_colors.items():
             access_group = group[group["llm_access_type"] == access_type]
             ax.scatter(
-                access_group["risk_mean"],
-                access_group["return_rate_mean"],
+                access_group["annualized_risk_mean"],
+                access_group["annualized_return_rate_mean"],
                 s=18,
                 alpha=0.62,
                 color=color,
                 label=access_type,
             )
         ax.set_title(f"Month {month}")
-        ax.set_xlabel("Risk")
-        ax.set_ylabel("Return rate")
+        ax.set_xlabel("Annualized return-rate risk (SD)")
+        ax.set_ylabel("Mean annualized return rate")
 
     for ax in axes_array[len(months) :]:
         ax.axis("off")
@@ -1837,11 +2102,11 @@ def plot_outputs(summary: pd.DataFrame, fits: pd.DataFrame, output_dir: Path) ->
     for scenario in chosen:
         group = summary[summary["scenario"] == scenario].sort_values("month")
         fit = fits[fits["scenario"] == scenario].sort_values("month")
-        ax.plot(fit["month"], fit["fitted_return_rate"], linewidth=1.8, label=scenario)
-        ax.scatter(group["month"], group["return_rate_mean"], s=12)
-    ax.set_title("Fitted Efficient Return Rate Curves")
+        ax.plot(fit["month"], fit["fitted_annualized_return_rate"], linewidth=1.8, label=scenario)
+        ax.scatter(group["month"], group["annualized_return_rate_mean"], s=12)
+    ax.set_title("Fitted Annualized Return-Rate Curves")
     ax.set_xlabel("Month")
-    ax.set_ylabel("Efficiency gain per cost-index unit per person")
+    ax.set_ylabel("Annualized return rate")
     ax.legend(fontsize=7, loc="best")
     fig.tight_layout()
     fig.savefig(plots_dir / "fitted_return_rate_curves.png", dpi=180)
@@ -1863,10 +2128,10 @@ def plot_outputs(summary: pd.DataFrame, fits: pd.DataFrame, output_dir: Path) ->
     final_months = sorted(summary["month"].unique())[-3:]
     for ax, month in zip(axes, final_months, strict=True):
         group = summary[summary["month"] == month]
-        ax.scatter(group["risk_mean"], group["return_rate_mean"], s=18, alpha=0.65)
+        ax.scatter(group["annualized_risk_mean"], group["annualized_return_rate_mean"], s=18, alpha=0.65)
         ax.set_title(f"Month {month}")
-        ax.set_xlabel("Risk: std. dev. of return-rate changes")
-        ax.set_ylabel("Return rate")
+        ax.set_xlabel("Annualized return-rate risk (SD)")
+        ax.set_ylabel("Mean annualized return rate")
     fig.tight_layout()
     fig.savefig(plots_dir / "risk_return_2d_slices.png", dpi=180)
     plt.close(fig)
@@ -1883,16 +2148,16 @@ def plot_outputs(summary: pd.DataFrame, fits: pd.DataFrame, output_dir: Path) ->
         for access_type, color in access_colors.items():
             access_group = group[group["llm_access_type"] == access_type]
             ax.scatter(
-                access_group["risk_mean"],
-                access_group["return_rate_mean"],
+                access_group["annualized_risk_mean"],
+                access_group["annualized_return_rate_mean"],
                 s=20,
                 alpha=0.65,
                 color=color,
                 label=access_type,
             )
         ax.set_title(f"Month {month}")
-        ax.set_xlabel("Risk: std. dev. of return-rate changes")
-        ax.set_ylabel("Return rate")
+        ax.set_xlabel("Annualized return-rate risk (SD)")
+        ax.set_ylabel("Mean annualized return rate")
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="upper center", ncol=2)
     fig.tight_layout(rect=(0, 0, 1, 0.92))
@@ -1907,17 +2172,17 @@ def plot_outputs(summary: pd.DataFrame, fits: pd.DataFrame, output_dir: Path) ->
     reduced = summary.groupby(["scenario", "month"], sort=False).head(1)
     ax3d.scatter(
         reduced["month"],
-        reduced["risk_mean"],
-        reduced["return_rate_mean"],
-        c=reduced["return_rate_mean"],
+        reduced["annualized_risk_mean"],
+        reduced["annualized_return_rate_mean"],
+        c=reduced["annualized_return_rate_mean"],
         cmap="viridis",
         s=16,
         alpha=0.7,
     )
-    ax3d.set_title("Revenue-Rate vs Risk vs Time")
+    ax3d.set_title("Annualized Return Rate vs Risk vs Time")
     ax3d.set_xlabel("Month")
-    ax3d.set_ylabel("Risk")
-    ax3d.set_zlabel("Return rate")
+    ax3d.set_ylabel("Annualized return-rate risk (SD)")
+    ax3d.set_zlabel("Mean annualized return rate")
     fig.tight_layout()
     fig.savefig(plots_dir / "revenue_risk_time_3d.png", dpi=180)
     plt.close(fig)
@@ -1928,12 +2193,12 @@ def plot_outputs(summary: pd.DataFrame, fits: pd.DataFrame, output_dir: Path) ->
         fig_px = px.scatter_3d(
             reduced,
             x="month",
-            y="risk_mean",
-            z="return_rate_mean",
+            y="annualized_risk_mean",
+            z="annualized_return_rate_mean",
             color="model",
             symbol="token_cost",
             hover_name="scenario",
-            title="Revenue-Rate vs Risk vs Time",
+            title="Annualized Return Rate vs Risk vs Time",
         )
         fig_px.write_html(plots_dir / "revenue_risk_time_3d.html")
     except Exception as exc:
@@ -1991,6 +2256,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ai-gain-max", type=float, default=2.0)
     parser.add_argument("--embargo-shock-probability", type=float, default=0.05)
     parser.add_argument("--embargo-rollback-months", type=int, default=6)
+    parser.add_argument(
+        "--stochastic-shocks",
+        action="store_true",
+        help="Replace deterministic token-cost and plateau scenarios with persistent stochastic shock combinations.",
+    )
+    parser.add_argument("--sudden-break-even-probability-per-month", type=float, default=0.01)
+    parser.add_argument("--gradual-break-even-probability-per-month", type=float, default=0.01)
+    parser.add_argument("--capability-plateau-probability-per-month", type=float, default=0.01)
     parser.add_argument("--confidential-mixing-ratio", type=float, default=0.5)
     parser.add_argument("--confidential-mixing-penalty", type=float, default=0.5)
     parser.add_argument("--cloud-oss-hours-per-usage-unit-period", type=float, default=None)
@@ -2001,6 +2274,23 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.01,
         help="Deterministic per-employee efficiency gain from no-cost integrated AI features, scaled by the persona adoption-prior mean.",
+    )
+    parser.add_argument(
+        "--zero-risk-confidential-work-share",
+        type=float,
+        default=0.20,
+        help="Share of confidential work eligible for zero-risk integrated-AI gains.",
+    )
+    parser.add_argument(
+        "--disable-counterfactual-skill-growth",
+        action="store_true",
+        help="Do not discount AI-attributed gains for counterfactual employee skill growth.",
+    )
+    parser.add_argument(
+        "--counterfactual-skill-growth-rate-per-year",
+        type=float,
+        default=DEFAULT_COUNTERFACTUAL_SKILL_GROWTH_RATE_PER_YEAR,
+        help="Annual compound counterfactual employee skill-growth rate used to discount AI-attributed gains.",
     )
     parser.add_argument("--max-monthly-service-budget", type=float, default=None)
     parser.add_argument("--max-upfront-hardware-budget", type=float, default=None)
@@ -2083,12 +2373,19 @@ def main() -> None:
         ai_gain_max=args.ai_gain_max,
         embargo_shock_probability=args.embargo_shock_probability,
         embargo_rollback_months=args.embargo_rollback_months,
+        stochastic_shocks=args.stochastic_shocks,
+        sudden_break_even_probability_per_month=args.sudden_break_even_probability_per_month,
+        gradual_break_even_probability_per_month=args.gradual_break_even_probability_per_month,
+        capability_plateau_probability_per_month=args.capability_plateau_probability_per_month,
         confidential_mixing_ratio=args.confidential_mixing_ratio,
         confidential_mixing_penalty=args.confidential_mixing_penalty,
         cloud_oss_hours_per_usage_unit_period=args.cloud_oss_hours_per_usage_unit_period,
         it_support_enabled=not args.disable_it_support,
         it_support_max_users=args.it_support_max_users,
         zero_risk_feature_gain=args.zero_risk_feature_gain,
+        zero_risk_confidential_work_share=args.zero_risk_confidential_work_share,
+        counterfactual_skill_growth_enabled=not args.disable_counterfactual_skill_growth,
+        counterfactual_skill_growth_rate_per_year=args.counterfactual_skill_growth_rate_per_year,
         backend=backend,
         output_dir=args.output_dir,
     )
@@ -2106,10 +2403,10 @@ def main() -> None:
     fits.to_csv(config.output_dir / "fitted_return_rate_curves.csv", index=False)
     plot_outputs(summary, fits, config.output_dir)
 
-    best = summary[summary["period"] == summary["period"].max()].sort_values("return_rate_mean", ascending=False).head(5)
+    best = summary[summary["period"] == summary["period"].max()].sort_values("annualized_return_rate_mean", ascending=False).head(5)
     print(f"Wrote outputs to {config.output_dir}")
-    print("Top final-period scenarios by mean return rate:")
-    print(best[["scenario", "return_rate_mean", "risk_mean", "cost_per_efficiency_increment_mean"]].to_string(index=False))
+    print("Top final-period scenarios by mean annualized return rate:")
+    print(best[["scenario", "annualized_return_rate_mean", "annualized_risk_mean", "cost_per_efficiency_increment_mean"]].to_string(index=False))
 
 
 if __name__ == "__main__":

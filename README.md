@@ -51,6 +51,30 @@ python simulate_llm_efficiency.py \
   --runs 1000
 ```
 
+Stochastic break-even and capability-shock mode:
+
+```bash
+python simulate_llm_efficiency.py \
+  --stochastic-shocks \
+  --sudden-break-even-probability-per-month 0.01 \
+  --gradual-break-even-probability-per-month 0.01 \
+  --capability-plateau-probability-per-month 0.01 \
+  --runs 1000
+```
+
+In this opt-in mode the simulator evaluates all eight enabled-shock
+combinations: no shocks, each individual shock, each pair, and all three
+shocks. Probabilities are interpreted per month and converted to the chosen
+simulation resolution. A shock is sampled once per run, remains active after
+it occurs, and affects the occurrence period onward. Sudden break-even jumps
+token cost to the break-even multiplier; gradual break-even ramps from the
+occurrence period to that multiplier by the end of the horizon; and a
+capability-plateau shock freezes capability at its occurrence level.
+
+The run-level and summary CSVs include `shock_combination` plus the three
+shock-state columns. The summary grouping includes `shock_combination` so
+rows remain separated by enabled shock combination.
+
 Budget sweep wrapper:
 
 ```bash
@@ -140,6 +164,17 @@ python sweep_portfolio_rate_changes.py \
   --output-dir portfolio_sweep_outputs
 ```
 
+The same stochastic mode is available on the portfolio sweep:
+
+```bash
+python sweep_portfolio_rate_changes.py \
+  --stochastic-shocks \
+  --sudden-break-even-probability-per-month 0.01 \
+  --gradual-break-even-probability-per-month 0.01 \
+  --capability-plateau-probability-per-month 0.01 \
+  --output-dir portfolio_stochastic_sweep_outputs
+```
+
 For a compact figure spanning one column of a two-column paper, add
 `--figure-width one-column`. This writes
 `portfolio_efficiency_risk_frontier_one_column.png` at 3.5 inches wide and
@@ -195,11 +230,11 @@ portfolio manifest:
 - `portfolio_final_risk_sensitivity.png`
 - `portfolio_plateau_comparison.png`
 
-It also writes a portfolio-theory view based on final-period per-employee
-efficiency gain: `portfolio_efficiency_risk_frontier.png`. It shows all
-simulated portfolios, their efficient frontier, the zero-cost integrated-AI
-feature baseline at zero risk, and the allocation line through the
-highest gain-per-unit-risk frontier point. Its source data are in
+It also writes a portfolio-theory view based on final-period annualized return
+rate and annualized return-rate risk:
+`portfolio_efficiency_risk_frontier.png`. It shows all simulated portfolios,
+their efficient frontier, and the allocation line through the highest
+return-per-unit-risk frontier point. Its source data are in
 `portfolio_efficiency_risk_points.csv`.
 
 `portfolio_efficiency_risk_frontier_by_asset_mix.png` is an additional view
@@ -216,6 +251,36 @@ Regenerate all plots from an existing run without resimulating:
 
 ```bash
 python sweep_portfolio_rate_changes.py --replot-only --output-dir full_sweep
+```
+
+Run the six company profiles as a SLURM array, using one node and one local
+worker process per allocated CPU, then merge and replot after the array
+finishes:
+
+```bash
+mkdir -p portfolio_sweep_slurm
+sbatch --export=ALL,OUTPUT_DIR="$PWD/portfolio_sweep_slurm" \
+  slurm/portfolio_profile_array.sbatch
+```
+
+The array defaults to 72 CPUs per node. Adjust
+`--cpus-per-task` in `slurm/portfolio_profile_array.sbatch` to 96 (or the
+appropriate allocation for the partition). To use a virtual environment,
+submit with its Python executable:
+
+```bash
+sbatch --export=ALL,OUTPUT_DIR="$PWD/portfolio_sweep_slurm",PYTHON_BIN="$PWD/.venv/bin/python" \
+  slurm/portfolio_profile_array.sbatch
+```
+
+Submit the merge/replot job after the array with:
+
+```bash
+ARRAY_JOB=$(sbatch --parsable --export=ALL,OUTPUT_DIR="$PWD/portfolio_sweep_slurm" \
+  slurm/portfolio_profile_array.sbatch)
+sbatch --dependency="afterok:${ARRAY_JOB}" \
+  --export=ALL,OUTPUT_DIR="$PWD/portfolio_sweep_slurm" \
+  slurm/portfolio_profile_merge.sbatch
 ```
 
 Illustrative three-portfolio plot:
@@ -259,11 +324,21 @@ gain means, noise, bounds, and the zero-cost feature gain are scaled by
 months. Thus a 10% annual gain contributes 2.5% in a quarterly period rather
 than applying the full annual gain every quarter.
 
+The minimum simulation period is one month. Service spend, cloud-OSS hours,
+IT support, and hardware CAPEX amortization are all scaled by
+`resolution_months`; hardware CAPEX is amortized over 36 calendar months.
+
 The main return metric is:
 
 ```text
 return_rate = mean_efficiency_gain_per_person / total_cost_index_per_person
 ```
+
+This is a period-level gain-to-cost ratio. The simulator also writes
+`annualized_return_rate = return_rate * 12 / resolution_months`. The
+per-bracket Pareto table uses this annualized return rate and its Monte Carlo
+standard deviation, with compact asset labels such as `Global API`, `EU API`,
+`On-prem`, and `EU OSS cloud`.
 
 The inverse metric is also reported:
 
@@ -309,10 +384,10 @@ assumptions, public source links, and update method are documented in
 The 3D plot uses:
 
 - x: time in months
-- y: risk
-- z: return rate
+- y: annualized return-rate risk
+- z: annualized return rate
 
-Risk follows the finance-style volatility idea requested here: the standard deviation of scenario return-rate changes observed up to the simulated point in time. It is computed per Monte Carlo run and then summarized across runs.
+Risk follows the finance-style volatility idea requested here: the standard deviation of scenario return-rate changes observed up to the simulated point in time. Plots annualize both return rate and this risk by `12 / resolution_months`.
 
 ## Model Assumptions
 

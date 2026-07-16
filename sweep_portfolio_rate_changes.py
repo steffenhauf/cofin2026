@@ -28,6 +28,7 @@ from simulate_llm_efficiency import (
     HARDWARE_SCENARIOS,
     LOCAL_FALLBACK_POLICIES,
     MODEL_SCENARIOS,
+    SHOCK_COMBINATIONS,
     TOKEN_SCENARIOS,
     SimulationConfig,
     _hardware_calibration_profile,
@@ -40,7 +41,7 @@ from simulate_llm_efficiency import (
 HEADCOUNTS = (5, 25, 50, 100, 500, 2500)
 SERVICE_BUDGETS_USD = (5.0, 10.0, 25.0, 50.0)
 HARDWARE_BUDGETS_USD = (0.0, 10_000.0, 50_000.0, 100_000.0, 500_000.0, 1_000_000.0)
-CONFIDENTIAL_SHARES = (0.0, 0.1, 0.25, 0.5, 1.0)
+CONFIDENTIAL_SHARES = (0.0, 0.1, 0.25, 0.5, 0.9)
 PORTFOLIOS = ("low_risk", "optimum", "high_gain")
 COMPANY_PROFILES = {
     "administration_heavy": {
@@ -135,20 +136,32 @@ def friendly_label(scenario: SweepScenario, portfolio: str) -> str:
     )
 
 
-def scenario_grid() -> list[SweepScenario]:
+def scenario_grid(stochastic_shocks: bool = False) -> list[SweepScenario]:
     return [
         SweepScenario(users, service, hardware, confidential, plateau)
         for users in HEADCOUNTS
         for service in SERVICE_BUDGETS_USD
         for hardware in HARDWARE_BUDGETS_USD
         for confidential in CONFIDENTIAL_SHARES
-        for plateau in (True, False)
+        for plateau in ((False,) if stochastic_shocks else (True, False))
     ]
 
 
-def simulation_scenarios(hardware_name: str, plateau: bool, hardware_calibration: str) -> list[tuple[str, str, str, str, str, str, str]]:
+def simulation_scenarios(
+    hardware_name: str,
+    plateau: bool,
+    hardware_calibration: str,
+    stochastic_shocks: bool = False,
+) -> list[tuple]:
     rows = []
-    for model, model_specification in MODEL_SCENARIOS.items():
+    model_scenarios = (
+        ((model, specification) for model, specification in MODEL_SCENARIOS.items() if specification["growth"])
+        if stochastic_shocks
+        else MODEL_SCENARIOS.items()
+    )
+    token_scenarios = ("flat",) if stochastic_shocks else tuple(TOKEN_SCENARIOS)
+    shock_combinations = SHOCK_COMBINATIONS if stochastic_shocks else ("none",)
+    for model, model_specification in model_scenarios:
         if plateau and model_specification["growth"]:
             continue
         if not plateau and not model_specification["growth"]:
@@ -158,15 +171,17 @@ def simulation_scenarios(hardware_name: str, plateau: bool, hardware_calibration
         if hardware_name not in ("cloud_api_only", "cloud_oss") and model_specification["kind"] != "oss":
             continue
         if hardware_name == "cloud_oss":
-            rows.append((model, "flat", hardware_name, "maxed_out", "pay_per_use", "persona_choice", "eu_cloud_oss"))
+            for shock_combination in shock_combinations:
+                rows.append((model, "flat", hardware_name, "maxed_out", "pay_per_use", "persona_choice", "eu_cloud_oss", shock_combination))
             continue
-        for token_cost in TOKEN_SCENARIOS:
+        for token_cost in token_scenarios:
             for access_plan in ACCESS_PLANS:
                 fallbacks = ("persona_choice",) if hardware_name == "cloud_api_only" else LOCAL_FALLBACK_POLICIES
                 providers = ("global_service", "european_service") if hardware_name == "cloud_api_only" else ("local_hardware",)
                 for fallback in fallbacks:
                     for service_provider in providers:
-                        rows.append((model, token_cost, hardware_name, "maxed_out", access_plan, fallback, service_provider))
+                        for shock_combination in shock_combinations:
+                            rows.append((model, token_cost, hardware_name, "maxed_out", access_plan, fallback, service_provider, shock_combination))
     return rows
 
 def simulate_portfolio_scenario(
@@ -186,7 +201,10 @@ def simulate_portfolio_scenario(
         plateau_quarter=base_config.plateau_quarter if scenario.plateau else 10**6,
         max_monthly_service_budget_usd=scenario.service_budget_per_person_usd * scenario.users,
         max_upfront_hardware_budget_usd=scenario.hardware_budget_usd,
-        confidential_document_fraction=scenario.confidential_share,
+        confidential_document_fraction=min(scenario.confidential_share, 0.9),
+        zero_risk_confidential_work_share=base_config.zero_risk_confidential_work_share,
+        counterfactual_skill_growth_enabled=base_config.counterfactual_skill_growth_enabled,
+        counterfactual_skill_growth_rate_per_year=base_config.counterfactual_skill_growth_rate_per_year,
         usd_per_service_cost_index_quarter=base_config.usd_per_service_cost_index_quarter,
         usd_per_hardware_capex_index=base_config.usd_per_hardware_capex_index,
         hardware_calibration=hardware_calibration,
@@ -204,6 +222,10 @@ def simulate_portfolio_scenario(
         zero_risk_feature_gain=base_config.zero_risk_feature_gain,
         embargo_shock_probability=base_config.embargo_shock_probability,
         embargo_rollback_months=base_config.embargo_rollback_months,
+        stochastic_shocks=base_config.stochastic_shocks,
+        sudden_break_even_probability_per_month=base_config.sudden_break_even_probability_per_month,
+        gradual_break_even_probability_per_month=base_config.gradual_break_even_probability_per_month,
+        capability_plateau_probability_per_month=base_config.capability_plateau_probability_per_month,
         confidential_mixing_ratio=base_config.confidential_mixing_ratio,
         confidential_mixing_penalty=base_config.confidential_mixing_penalty,
         cloud_oss_hours_per_usage_unit_period=base_config.cloud_oss_hours_per_usage_unit_period,
@@ -217,8 +239,8 @@ def simulate_portfolio_scenario(
     frames = []
     asset_names = (hardware_name, "cloud_oss")
     for offset, asset_name in enumerate(asset_names):
-        for model_scenario in simulation_scenarios(asset_name, scenario.plateau, config.hardware_calibration):
-            frames.append(_simulate_one_scenario((*model_scenario, config, config.seed + offset * 1009)))
+        for model_scenario in simulation_scenarios(asset_name, scenario.plateau, config.hardware_calibration, config.stochastic_shocks):
+            frames.append(_simulate_one_scenario((*model_scenario[:7], config, config.seed + offset * 1009, model_scenario[7])))
     unit_cost_usd = hardware_purchase_cost_usd(hardware_calibration, hardware_name)
     replicas = int(scenario.hardware_budget_usd // unit_cost_usd) if unit_cost_usd else 0
     metadata = {
@@ -233,18 +255,26 @@ def simulate_portfolio_scenario(
 def return_change_summary(results: pd.DataFrame) -> pd.DataFrame:
     ordered = results.sort_values(["scenario", "run", "period"]).copy()
     ordered["return_rate_change"] = ordered.groupby(["scenario", "run"], sort=False)["return_rate"].diff().fillna(0.0)
-    group_cols = ["scenario", "model", "token_cost", "access_plan", "hardware", "hardware_refresh", "local_fallback", "service_provider", "period", "month"]
+    group_cols = ["scenario", "model", "token_cost", "access_plan", "hardware", "hardware_refresh", "local_fallback", "service_provider", "shock_combination", "period", "month"]
     return (
         ordered.groupby(group_cols, sort=False)
         .agg(
             median_return_rate_change=("return_rate_change", "median"),
             risk_stddev=("return_rate_change", "std"),
+            median_annualized_return_rate=("annualized_return_rate", "median"),
+            annualized_return_rate_risk_stddev=("annualized_return_rate", "std"),
             median_efficiency_gain=("mean_efficiency_gain", "median"),
             efficiency_gain_risk_stddev=("mean_efficiency_gain", "std"),
             median_zero_risk_efficiency_gain=("zero_risk_efficiency_gain", "median"),
         )
         .reset_index()
-        .fillna({"risk_stddev": 0.0, "efficiency_gain_risk_stddev": 0.0})
+        .fillna(
+            {
+                "risk_stddev": 0.0,
+                "annualized_return_rate_risk_stddev": 0.0,
+                "efficiency_gain_risk_stddev": 0.0,
+            }
+        )
     )
 
 
@@ -253,7 +283,8 @@ def efficient_frontier(
     risk_column: str = "risk_stddev",
     reward_column: str = "median_return_rate_change",
 ) -> pd.DataFrame:
-    ordered = points.sort_values([risk_column, reward_column], ascending=[True, False])
+    finite = np.isfinite(points[risk_column]) & np.isfinite(points[reward_column])
+    ordered = points.loc[finite].sort_values([risk_column, reward_column], ascending=[True, False])
     best_gain = -np.inf
     selected = []
     for _, row in ordered.iterrows():
@@ -263,34 +294,50 @@ def efficient_frontier(
     return pd.DataFrame(selected)
 
 
-def _choose(points: pd.DataFrame, portfolio: str) -> tuple[pd.Series, str]:
-    risk_mean, risk_std = points["risk_stddev"].mean(), points["risk_stddev"].std(ddof=0)
-    gain_mean, gain_std = points["median_return_rate_change"].mean(), points["median_return_rate_change"].std(ddof=0)
+def _choose(
+    points: pd.DataFrame,
+    portfolio: str,
+    risk_column: str = "risk_stddev",
+    reward_column: str = "median_return_rate_change",
+) -> tuple[pd.Series, str]:
+    risk_mean, risk_std = points[risk_column].mean(), points[risk_column].std(ddof=0)
+    gain_mean, gain_std = points[reward_column].mean(), points[reward_column].std(ddof=0)
     if portfolio == "low_risk":
-        eligible = points[points["risk_stddev"] <= risk_mean - risk_std]
+        eligible = points[points[risk_column] <= risk_mean - risk_std]
         if eligible.empty:
-            return points.sort_values(["risk_stddev", "median_return_rate_change"], ascending=[True, False]).iloc[0], "minimum-risk fallback"
-        return eligible.sort_values(["median_return_rate_change", "risk_stddev"], ascending=[False, True]).iloc[0], "risk <= mean - 1 sigma"
+            return points.sort_values([risk_column, reward_column], ascending=[True, False]).iloc[0], "minimum-risk fallback"
+        return eligible.sort_values([reward_column, risk_column], ascending=[False, True]).iloc[0], "risk <= mean - 1 sigma"
     if portfolio == "optimum":
-        eligible = points[points["risk_stddev"].between(risk_mean - risk_std, risk_mean + risk_std)]
+        eligible = points[points[risk_column].between(risk_mean - risk_std, risk_mean + risk_std)]
         if eligible.empty:
             eligible = points
             reason = "all-frontier fallback"
         else:
             reason = "risk within mean +/- 1 sigma"
-        return eligible.sort_values(["median_return_rate_change", "risk_stddev"], ascending=[False, True]).iloc[0], reason
-    eligible = points[points["median_return_rate_change"] >= gain_mean + 3.0 * gain_std]
+        return eligible.sort_values([reward_column, risk_column], ascending=[False, True]).iloc[0], reason
+    eligible = points[points[reward_column] >= gain_mean + 3.0 * gain_std]
     if eligible.empty:
-        return points.sort_values(["median_return_rate_change", "risk_stddev"], ascending=[False, True]).iloc[0], "maximum-gain fallback"
-    return eligible.sort_values(["risk_stddev", "median_return_rate_change"], ascending=[True, False]).iloc[0], "gain >= mean + 3 sigma"
+        return points.sort_values([reward_column, risk_column], ascending=[False, True]).iloc[0], "maximum-gain fallback"
+    return eligible.sort_values([risk_column, reward_column], ascending=[True, False]).iloc[0], "gain >= mean + 3 sigma"
 
 
 def select_portfolios(summary: pd.DataFrame, scenario: SweepScenario, metadata: dict[str, object]) -> pd.DataFrame:
     rows = []
     for (period, month), points in summary.groupby(["period", "month"], sort=True):
-        frontier = efficient_frontier(points)
+        frontier = efficient_frontier(
+            points,
+            "annualized_return_rate_risk_stddev",
+            "median_annualized_return_rate",
+        )
+        if frontier.empty:
+            continue
         for portfolio in PORTFOLIOS:
-            selected, rule = _choose(frontier, portfolio)
+            selected, rule = _choose(
+                frontier,
+                portfolio,
+                "annualized_return_rate_risk_stddev",
+                "median_annualized_return_rate",
+            )
             row = selected.to_dict()
             provider_labels = {
                 "global_service": "global service",
@@ -300,7 +347,7 @@ def select_portfolios(summary: pd.DataFrame, scenario: SweepScenario, metadata: 
             row.update(
                 portfolio=portfolio,
                 selection_rule=rule,
-                column_label=friendly_label(scenario, portfolio) + f" | {provider_labels.get(selected.get('service_provider'), selected.get('service_provider', 'service'))}",
+                column_label=friendly_label(scenario, portfolio) + f" | {provider_labels.get(selected.get('service_provider'), selected.get('service_provider', 'service'))} | shocks: {selected.get('shock_combination', 'none')}",
                 users=scenario.users,
                 service_budget_per_person_usd=scenario.service_budget_per_person_usd,
                 hardware_budget_usd=scenario.hardware_budget_usd,
@@ -354,7 +401,18 @@ def _selected_median_rows(selected: pd.DataFrame, month: float | None = None) ->
     group_cols = ["portfolio", "service_type"]
     if "users" in values:
         group_cols.append("users")
-    numeric = [column for column in ("risk_stddev", "median_return_rate_change", "efficiency_gain_risk_stddev", "median_efficiency_gain") if column in values]
+    numeric = [
+        column
+        for column in (
+            "risk_stddev",
+            "median_return_rate_change",
+            "annualized_return_rate_risk_stddev",
+            "median_annualized_return_rate",
+            "efficiency_gain_risk_stddev",
+            "median_efficiency_gain",
+        )
+        if column in values
+    ]
     return values.groupby(group_cols, as_index=False)[numeric].median()
 
 
@@ -392,6 +450,22 @@ def _add_service_legend(ax, loc="lower right") -> None:
     ax.add_artist(legend)
 
 
+
+def _symlog_threshold(values: pd.Series | np.ndarray) -> float:
+    finite = np.abs(np.asarray(values, dtype=float))
+    finite = finite[np.isfinite(finite) & (finite > 0.0)]
+    if finite.size == 0:
+        return 1e-6
+    return max(1e-6, float(np.percentile(finite, 10)))
+
+
+def _apply_frontier_scale(ax, risk_values, reward_values, symlog: bool) -> None:
+    if not symlog:
+        return
+    ax.set_xscale("symlog", linthresh=_symlog_threshold(risk_values))
+    ax.set_yscale("symlog", linthresh=_symlog_threshold(reward_values))
+
+
 def _combined_legend(ax, values: pd.DataFrame, extra_handles: list[Line2D] | None = None) -> None:
     colors = _employee_colors(values)
     handles = [Line2D([], [], marker="o", linestyle="", color=color, label=f"Employees: {users}") for users, color in colors.items()]
@@ -414,7 +488,12 @@ def _combined_legend(ax, values: pd.DataFrame, extra_handles: list[Line2D] | Non
     )
 
 
-def per_bracket_pareto_assets(points: pd.DataFrame, grouping_columns: list[str] | None = None) -> pd.DataFrame:
+def per_bracket_pareto_assets(
+    points: pd.DataFrame,
+    grouping_columns: list[str] | None = None,
+    risk_column: str = "efficiency_gain_risk_stddev",
+    reward_column: str = "median_efficiency_gain",
+) -> pd.DataFrame:
     """Select low-risk, optimum, and high-gain assets independently per employee bracket."""
     if points.empty:
         return pd.DataFrame()
@@ -427,10 +506,12 @@ def per_bracket_pareto_assets(points: pd.DataFrame, grouping_columns: list[str] 
         group_metadata = dict(zip(group_columns, group_key, strict=True))
         users = group_metadata["users"]
 
-        frontier = efficient_frontier(group, "efficiency_gain_risk_stddev", "median_efficiency_gain")
+        frontier = efficient_frontier(group, risk_column, reward_column)
+        if frontier.empty:
+            continue
         scored = frontier.copy()
-        scored["risk_stddev"] = scored["efficiency_gain_risk_stddev"]
-        scored["median_return_rate_change"] = scored["median_efficiency_gain"]
+        scored["risk_stddev"] = scored[risk_column]
+        scored["median_return_rate_change"] = scored[reward_column]
         for portfolio in PORTFOLIOS:
             chosen, rule = _choose(scored, portfolio)
             row = chosen.drop(labels=["risk_stddev", "median_return_rate_change"], errors="ignore").to_dict()
@@ -453,25 +534,55 @@ def write_per_bracket_pareto_csvs(assets: pd.DataFrame, output_dir: Path) -> Non
 
 def write_pareto_markdown_table(points: pd.DataFrame, output_path: Path) -> None:
     """Write a Markdown matrix grouped by shock assumptions and work mix."""
-    grouping = ["company_profile", "capability_plateau_after_18_months", "token_cost", "users"]
-    assets = per_bracket_pareto_assets(points, grouping)
+    stochastic_shocks = (
+        "shock_combination" in points
+        and points["shock_combination"].fillna("none").ne("none").any()
+    )
+    grouping = (
+        ["company_profile", "shock_combination", "users"]
+        if stochastic_shocks
+        else ["company_profile", "capability_plateau_after_18_months", "token_cost", "shock_combination", "users"]
+    )
+    annualized_return_columns = {
+        "median_annualized_return_rate",
+        "annualized_return_rate_risk_stddev",
+    }
+    show_annualized_returns = annualized_return_columns.issubset(points.columns)
+    assets = per_bracket_pareto_assets(
+        points,
+        grouping,
+        "annualized_return_rate_risk_stddev" if show_annualized_returns else "efficiency_gain_risk_stddev",
+        "median_annualized_return_rate" if show_annualized_returns else "median_efficiency_gain",
+    )
     if assets.empty:
         return
-    assets["shock_assumption"] = assets.apply(
-        lambda row: f"{row['token_cost']}; {'plateau after 18 months' if bool(row['capability_plateau_after_18_months']) else 'continuous capability growth'}",
-        axis=1,
-    )
+    if stochastic_shocks:
+        assets["shock_assumption"] = assets["shock_combination"].map(
+            lambda combination: f"shocks: {combination}"
+        )
+    else:
+        assets["shock_assumption"] = assets.apply(
+            lambda row: f"{row['token_cost']}; {'plateau after 18 months' if bool(row['capability_plateau_after_18_months']) else 'continuous capability growth'}; shocks: {row.get('shock_combination', 'none')}",
+            axis=1,
+        )
     assets["work_mix"] = assets["company_profile"]
-    assets["asset_type"] = assets.apply(
-        lambda row: f"{row.get('hardware', 'unknown')} / {_service_type(row)}",
-        axis=1,
-    )
+    asset_labels = {
+        "global_service": "Global API",
+        "european_service": "EU API",
+        "local_hardware": "On-prem",
+        "eu_cloud_oss": "EU OSS cloud",
+    }
+    assets["asset_label"] = assets["service_provider"].map(asset_labels).fillna(assets["hardware"])
     brackets = sorted(int(value) for value in assets["employee_bracket"].unique())
     portfolio_labels = {"low_risk": "Low risk", "optimum": "Optimum", "high_gain": "High return"}
     lines = [
         "# Per-bracket Pareto assets",
         "",
-        "Each cell shows `asset type (return, risk)` for the selected per-bracket Pareto asset. Return is median per-employee efficiency gain; risk is its standard deviation.",
+        (
+            "Each cell shows `asset (annualized return rate, annualized return-rate SD)` for the selected per-bracket Pareto asset."
+            if show_annualized_returns
+            else "Each cell shows `asset (return, risk)` for the selected per-bracket Pareto asset. Return is median per-employee efficiency gain; risk is its standard deviation."
+        ),
         "",
         "| Shock assumptions | Work mix | " + " | ".join(f"{users} employees" for users in brackets for _ in PORTFOLIOS) + " |",
         "|---|---|" + "|".join("---" for _ in range(len(brackets) * len(PORTFOLIOS))) + "|",
@@ -486,7 +597,12 @@ def write_pareto_markdown_table(points: pd.DataFrame, output_path: Path) -> None
                     cells.append("—")
                     continue
                 row = match.iloc[0]
-                cells.append(f"{row['asset_type']} ({row['median_efficiency_gain']:.3f}, {row['efficiency_gain_risk_stddev']:.3f})")
+                if show_annualized_returns:
+                    cells.append(
+                        f"{row['asset_label']} ({row['median_annualized_return_rate']:.3f}, {row['annualized_return_rate_risk_stddev']:.3f})"
+                    )
+                else:
+                    cells.append(f"{row['asset_label']} ({row['median_efficiency_gain']:.3f}, {row['efficiency_gain_risk_stddev']:.3f})")
         lines.append(f"| {shock} | {work_mix} | " + " | ".join(cells) + " |")
     output_path.write_text("\n".join(lines) + "\n")
 
@@ -518,19 +634,15 @@ def plot_month_grid(selected: pd.DataFrame, output_dir: Path) -> None:
     fig, axes = plt.subplots(rows, columns, figsize=(4.5 * columns, 3.6 * rows), squeeze=False)
     colors = {"low_risk": "#2563eb", "optimum": "#059669", "high_gain": "#dc2626"}
     bracket_colors = _employee_colors(selected)
-    risk_limits = (0.0, 0.1)
-    reward_limits = (0.0, 0.1)
     for ax, month in zip(axes.flat, months, strict=False):
         panel = selected[selected["month"] == month]
         for portfolio in PORTFOLIOS:
             values = panel[panel["portfolio"] == portfolio]
-            ax.scatter(values["risk_stddev"], values["median_return_rate_change"], s=8, alpha=0.20, color=colors[portfolio], label=portfolio.replace("_", " "))
-        _plot_selected_service_medians(ax, panel, "risk_stddev", "median_return_rate_change", bracket_colors)
+            ax.scatter(values["annualized_return_rate_risk_stddev"], values["median_annualized_return_rate"], s=8, alpha=0.20, color=colors[portfolio], label=portfolio.replace("_", " "))
+        _plot_selected_service_medians(ax, panel, "annualized_return_rate_risk_stddev", "median_annualized_return_rate", bracket_colors)
         ax.set_title(f"Month {month}")
-        ax.set_xlabel("Risk (standard deviation)")
-        ax.set_ylabel("Median return-rate change")
-        ax.set_xlim(risk_limits)
-        ax.set_ylim(reward_limits)
+        ax.set_xlabel("Annualized return-rate risk (SD)")
+        ax.set_ylabel("Median annualized return rate")
     for ax in axes.flat[len(months):]:
         ax.set_visible(False)
     _combined_legend(
@@ -552,64 +664,63 @@ def plot_animation(selected: pd.DataFrame, output_dir: Path) -> None:
     values["portfolio"] = values["portfolio"].str.replace("_", " ")
     figure = px.scatter(
         values,
-        x="risk_stddev",
-        y="median_return_rate_change",
+        x="annualized_return_rate_risk_stddev",
+        y="median_annualized_return_rate",
         color="portfolio",
         animation_frame="month",
         hover_name="column_label",
-        title="Portfolio return-rate changes by simulated month",
-        labels={"risk_stddev": "Risk (standard deviation)", "median_return_rate_change": "Median return-rate change"},
+        title="Portfolio annualized return rates by simulated month",
+        labels={
+            "annualized_return_rate_risk_stddev": "Annualized return-rate risk (SD)",
+            "median_annualized_return_rate": "Median annualized return rate",
+        },
     )
     figure.write_html(output_dir / "portfolio_risk_return_animation.html", include_plotlyjs="cdn")
 
 
-def plot_efficiency_risk_frontier(points: pd.DataFrame, output_dir: Path, one_column: bool = False, selected: pd.DataFrame | None = None, pareto_assets: pd.DataFrame | None = None) -> None:
-    """Plot the final-period efficient frontier with the zero-cost feature baseline."""
+def plot_efficiency_risk_frontier(points: pd.DataFrame, output_dir: Path, one_column: bool = False, selected: pd.DataFrame | None = None, pareto_assets: pd.DataFrame | None = None, symlog: bool = False) -> None:
+    """Plot the final-period annualized return-rate frontier."""
     if points.empty:
         return
-    risk = "efficiency_gain_risk_stddev"
-    reward = "median_efficiency_gain"
-    baseline = "median_zero_risk_efficiency_gain"
+    risk = "annualized_return_rate_risk_stddev"
+    reward = "median_annualized_return_rate"
     frontier = efficient_frontier(points, risk, reward)
-    risk_free_gain = float(points[baseline].median())
     positive_risk = frontier[frontier[risk] > 0.0].copy()
     if positive_risk.empty:
         tangency = None
     else:
-        tangency = positive_risk.loc[((positive_risk[reward] - risk_free_gain) / positive_risk[risk]).idxmax()]
+        tangency = positive_risk.loc[(positive_risk[reward] / positive_risk[risk]).idxmax()]
 
     fig, ax = plt.subplots(figsize=(3.5, 3.0) if one_column else (8.2, 5.8))
     ax.scatter(points[risk], points[reward], s=5 if one_column else 8, color="#111827", alpha=0.18, linewidths=0, label="Individual simulated portfolios")
     if selected is not None:
-        _plot_selected_service_medians(ax, selected, "efficiency_gain_risk_stddev", "median_efficiency_gain", _employee_colors(points))
+        _plot_selected_service_medians(ax, selected, risk, reward, _employee_colors(points))
     ax.plot(frontier[risk], frontier[reward], color="#2563eb", linewidth=1.5 if one_column else 2.2, marker="o", markersize=2.5 if one_column else 3.5, label="Efficient frontier")
-    ax.scatter([0.0], [risk_free_gain], marker="*", s=100 if one_column else 180, color="#ca8a04", edgecolor="#854d0e", zorder=4, label="Zero-cost AI feature baseline")
     if selected is not None:
-        _plot_pareto_assets(ax, pareto_assets, points, "efficiency_gain_risk_stddev", "median_efficiency_gain")
+        _plot_pareto_assets(ax, pareto_assets, points, risk, reward)
     if tangency is not None:
         end_risk = max(float(points[risk].max()), float(tangency[risk])) * 1.05
-        slope = (float(tangency[reward]) - risk_free_gain) / float(tangency[risk])
-        ax.plot([0.0, end_risk], [risk_free_gain, risk_free_gain + slope * end_risk], "--", color="#7c3aed", linewidth=1.4, label="Best risk-adjusted allocation")
+        slope = float(tangency[reward]) / float(tangency[risk])
+        ax.plot([0.0, end_risk], [0.0, slope * end_risk], "--", color="#7c3aed", linewidth=1.4, label="Best risk-adjusted allocation")
         ax.scatter([tangency[risk]], [tangency[reward]], s=42, color="#7c3aed", zorder=4)
-    asset_rewards = np.append(points[reward].to_numpy(float), risk_free_gain)
-    reward_min, reward_max = float(asset_rewards.min()), float(asset_rewards.max())
+    _apply_frontier_scale(ax, points[risk], points[reward], symlog)
+    reward_min, reward_max = float(points[reward].min()), float(points[reward].max())
     reward_margin = max(1e-6, (reward_max - reward_min) * 0.06)
     ax.set_ylim(reward_min - reward_margin, reward_max + reward_margin)
     ax.axvline(0.0, color="#6b7280", linewidth=0.8)
-    ax.set_xlabel("Risk: SD of per-employee gain", fontsize=8 if one_column else None)
-    ax.set_ylabel("Median per-employee gain", fontsize=8 if one_column else None)
+    ax.set_xlabel("Annualized return-rate risk (SD)", fontsize=8 if one_column else None)
+    ax.set_ylabel("Median annualized return rate", fontsize=8 if one_column else None)
     if not one_column:
-        ax.set_title("Final-period efficiency–risk frontier with zero-cost AI features")
+        ax.set_title("Final-period annualized return-rate frontier" + (" (symlog axes)" if symlog else ""))
     ax.tick_params(labelsize=7 if one_column else None)
     extra_handles = [
         Line2D([], [], color="#111827", linewidth=1.8, label="Efficient frontier"),
-        Line2D([], [], marker="*", linestyle="", color="#ca8a04", label="Zero-cost AI feature baseline"),
     ]
     if tangency is not None:
         extra_handles.append(Line2D([], [], color="#7c3aed", linestyle="--", label="Best risk-adjusted allocation"))
     _combined_legend(ax, points, extra_handles)
     fig.tight_layout()
-    suffix = "_one_column" if one_column else ""
+    suffix = ("_symlog" if symlog else "") + ("_one_column" if one_column else "")
     fig.savefig(output_dir / f"portfolio_efficiency_risk_frontier{suffix}.png", dpi=300 if one_column else 180)
     plt.close(fig)
 
@@ -621,13 +732,13 @@ def plot_efficiency_risk_frontier_by_asset_mix(
     one_column: bool = False,
     selected: pd.DataFrame | None = None,
     pareto_assets: pd.DataFrame | None = None,
+    symlog: bool = False,
 ) -> None:
     """Show the final frontier while encoding company size and spending mix."""
     if points.empty:
         return
-    risk = "efficiency_gain_risk_stddev"
-    reward = "median_efficiency_gain"
-    baseline = "median_zero_risk_efficiency_gain"
+    risk = "annualized_return_rate_risk_stddev"
+    reward = "median_annualized_return_rate"
     values = points.copy()
     service_commitment = values["service_budget_per_person_usd"] * values["users"] * simulation_months
     hardware_share = values["hardware_budget_usd"] / (values["hardware_budget_usd"] + service_commitment)
@@ -639,7 +750,6 @@ def plot_efficiency_risk_frontier_by_asset_mix(
     colors = dict(zip(sorted(values["users"].unique()), plt.get_cmap("tab10").colors, strict=False))
     markers = {"Hardware-heavy": "^", "Service-heavy": "o", "Mixed": "s"}
     frontier = efficient_frontier(values, risk, reward)
-    risk_free_gain = float(values[baseline].median())
 
     fig, ax = plt.subplots(figsize=(3.5, 3.0) if one_column else (8.2, 5.8))
     for (users, asset_mix), group in values.groupby(["users", "asset_mix"], sort=True):
@@ -657,20 +767,19 @@ def plot_efficiency_risk_frontier_by_asset_mix(
     ax.plot(frontier[risk], frontier[reward], color="#111827", linewidth=1.4 if one_column else 2.0, zorder=3)
     if selected is not None:
         _plot_pareto_assets(ax, pareto_assets, values, risk, reward)
-    ax.scatter([0.0], [risk_free_gain], marker="*", s=100 if one_column else 180, color="#ca8a04", edgecolor="#854d0e", zorder=4)
-    asset_rewards = np.append(values[reward].to_numpy(float), risk_free_gain)
-    reward_min, reward_max = float(asset_rewards.min()), float(asset_rewards.max())
+    _apply_frontier_scale(ax, values[risk], values[reward], symlog)
+    reward_min, reward_max = float(values[reward].min()), float(values[reward].max())
     ax.set_ylim(reward_min - max(1e-6, (reward_max - reward_min) * 0.06), reward_max + max(1e-6, (reward_max - reward_min) * 0.06))
     ax.axvline(0.0, color="#6b7280", linewidth=0.8)
-    ax.set_xlabel("Risk: SD of per-employee gain", fontsize=8 if one_column else None)
-    ax.set_ylabel("Median per-employee gain", fontsize=8 if one_column else None)
+    ax.set_xlabel("Annualized return-rate risk (SD)", fontsize=8 if one_column else None)
+    ax.set_ylabel("Median annualized return rate", fontsize=8 if one_column else None)
     if not one_column:
-        ax.set_title("Efficiency–risk frontier by company size and asset mix")
+        ax.set_title("Annualized return-rate frontier by company size and asset mix" + (" (symlog axes)" if symlog else ""))
     mix_handles = [Line2D([], [], marker=marker, linestyle="", color="#374151", label=f"Asset mix: {asset_mix}") for asset_mix, marker in markers.items()]
     _combined_legend(ax, values, mix_handles)
     ax.tick_params(labelsize=7 if one_column else None)
     fig.tight_layout()
-    suffix = "_one_column" if one_column else ""
+    suffix = ("_symlog" if symlog else "") + ("_one_column" if one_column else "")
     fig.savefig(output_dir / f"portfolio_efficiency_risk_frontier_by_asset_mix{suffix}.png", dpi=300 if one_column else 180)
     plt.close(fig)
 
@@ -712,12 +821,12 @@ def _hyperbolic_frontier_curve(
     return curve_risks, curve_rewards
 
 
-def plot_efficiency_risk_frontier_by_size(points: pd.DataFrame, output_dir: Path, one_column: bool = False, selected: pd.DataFrame | None = None, pareto_assets: pd.DataFrame | None = None) -> None:
-    """Show one hyperbola-style efficient frontier per company size."""
+def plot_efficiency_risk_frontier_by_size(points: pd.DataFrame, output_dir: Path, one_column: bool = False, selected: pd.DataFrame | None = None, pareto_assets: pd.DataFrame | None = None, symlog: bool = False) -> None:
+    """Show one hyperbola-style annualized return-rate frontier per company size."""
     if points.empty:
         return
-    risk = "efficiency_gain_risk_stddev"
-    reward = "median_efficiency_gain"
+    risk = "annualized_return_rate_risk_stddev"
+    reward = "median_annualized_return_rate"
     colors = dict(zip(sorted(points["users"].unique()), plt.get_cmap("tab10").colors, strict=False))
     fig, ax = plt.subplots(figsize=(3.5, 3.0) if one_column else (8.2, 5.8))
     for users, group in points.groupby("users", sort=True):
@@ -725,6 +834,7 @@ def plot_efficiency_risk_frontier_by_size(points: pd.DataFrame, output_dir: Path
         ax.scatter(group[risk], group[reward], s=6 if one_column else 11, color=color, alpha=0.14, linewidths=0)
         frontier = efficient_frontier(group, risk, reward)
         curve_risk, curve_reward = _hyperbolic_frontier_curve(frontier, risk, reward)
+        curve_risk = np.array(curve_risk, copy=True)
         fitted_risks = np.interp(group[reward].to_numpy(float), curve_reward, curve_risk)
         curve_risk -= max(0.0, float((fitted_risks - group[risk].to_numpy(float)).max())) + 1e-12
         ax.plot(curve_risk, curve_reward, color=color, linewidth=1.5 if one_column else 2.2)
@@ -734,26 +844,27 @@ def plot_efficiency_risk_frontier_by_size(points: pd.DataFrame, output_dir: Path
     reward_margin = max(1e-6, (reward_max - reward_min) * 0.06)
     ax.set_ylim(reward_min - reward_margin, reward_max + reward_margin)
     ax.axvline(0.0, color="#6b7280", linewidth=0.8)
-    ax.set_xlabel("Risk: SD of per-employee gain", fontsize=8 if one_column else None)
-    ax.set_ylabel("Median per-employee gain", fontsize=8 if one_column else None)
+    ax.set_xlabel("Annualized return-rate risk (SD)", fontsize=8 if one_column else None)
+    ax.set_ylabel("Median annualized return rate", fontsize=8 if one_column else None)
     if selected is not None:
         _plot_pareto_assets(ax, pareto_assets, points, risk, reward)
+    _apply_frontier_scale(ax, points[risk], points[reward], symlog)
     if not one_column:
-        ax.set_title("Hyperbolic efficient frontiers by company size")
+        ax.set_title("Hyperbolic annualized return-rate frontiers by company size" + (" (symlog axes)" if symlog else ""))
     ax.tick_params(labelsize=7 if one_column else None)
     _combined_legend(ax, points, [Line2D([], [], color="#111827", linewidth=1.8, label="Hyperbolic frontier")])
     fig.tight_layout()
-    suffix = "_one_column" if one_column else ""
+    suffix = ("_symlog" if symlog else "") + ("_one_column" if one_column else "")
     fig.savefig(output_dir / f"portfolio_efficiency_risk_frontier_by_size{suffix}.png", dpi=300 if one_column else 180)
     plt.close(fig)
 
 
-def plot_efficiency_risk_frontier_by_size_empirical(points: pd.DataFrame, output_dir: Path, one_column: bool = False, selected: pd.DataFrame | None = None, pareto_assets: pd.DataFrame | None = None) -> None:
-    """Show the observed Pareto frontier points for each company size without a fit."""
+def plot_efficiency_risk_frontier_by_size_empirical(points: pd.DataFrame, output_dir: Path, one_column: bool = False, selected: pd.DataFrame | None = None, pareto_assets: pd.DataFrame | None = None, symlog: bool = False) -> None:
+    """Show the observed annualized return-rate frontier points for each company size."""
     if points.empty:
         return
-    risk = "efficiency_gain_risk_stddev"
-    reward = "median_efficiency_gain"
+    risk = "annualized_return_rate_risk_stddev"
+    reward = "median_annualized_return_rate"
     colors = dict(zip(sorted(points["users"].unique()), plt.get_cmap("tab10").colors, strict=False))
     fig, ax = plt.subplots(figsize=(3.5, 3.0) if one_column else (8.2, 5.8))
     for users, group in points.groupby("users", sort=True):
@@ -774,16 +885,17 @@ def plot_efficiency_risk_frontier_by_size_empirical(points: pd.DataFrame, output
     reward_margin = max(1e-6, (reward_max - reward_min) * 0.06)
     ax.set_ylim(reward_min - reward_margin, reward_max + reward_margin)
     ax.axvline(0.0, color="#6b7280", linewidth=0.8)
-    ax.set_xlabel("Risk: SD of per-employee gain", fontsize=8 if one_column else None)
-    ax.set_ylabel("Median per-employee gain", fontsize=8 if one_column else None)
+    ax.set_xlabel("Annualized return-rate risk (SD)", fontsize=8 if one_column else None)
+    ax.set_ylabel("Median annualized return rate", fontsize=8 if one_column else None)
     if selected is not None:
         _plot_pareto_assets(ax, pareto_assets, points, risk, reward)
+    _apply_frontier_scale(ax, points[risk], points[reward], symlog)
     if not one_column:
-        ax.set_title("Observed efficient frontiers by company size")
+        ax.set_title("Observed annualized return-rate frontiers by company size" + (" (symlog axes)" if symlog else ""))
     ax.tick_params(labelsize=7 if one_column else None)
     _combined_legend(ax, points, [Line2D([], [], color="#111827", linewidth=1.8, marker="o", markersize=3, label="Observed Pareto frontier")])
     fig.tight_layout()
-    suffix = "_one_column" if one_column else ""
+    suffix = ("_symlog" if symlog else "") + ("_one_column" if one_column else "")
     fig.savefig(output_dir / f"portfolio_efficiency_risk_frontier_by_size_empirical{suffix}.png", dpi=300 if one_column else 180)
     plt.close(fig)
 
@@ -872,7 +984,7 @@ def plot_sensitivity_heatmaps(selected: pd.DataFrame, output_dir: Path, metric: 
 
 
 def plot_plateau_comparison(selected: pd.DataFrame, output_dir: Path) -> None:
-    bands = _bands(selected, ["portfolio", "capability_plateau_after_18_months", "month"], "median_return_rate_change")
+    bands = _bands(selected, ["portfolio", "capability_plateau_after_18_months", "month"], "median_annualized_return_rate")
     fig, axes = plt.subplots(1, len(PORTFOLIOS), figsize=(5 * len(PORTFOLIOS), 4), sharey=True)
     colors = {False: "#2563eb", True: "#dc2626"}
     labels = {False: "Continuous improvement", True: "Plateau after 18 months"}
@@ -885,7 +997,7 @@ def plot_plateau_comparison(selected: pd.DataFrame, output_dir: Path) -> None:
         ax.axvline(18, color="#6b7280", linewidth=1, linestyle="--")
         ax.set_title(portfolio.replace("_", " "))
         ax.set_xlabel("Month")
-    axes[0].set_ylabel("Median return-rate change")
+    axes[0].set_ylabel("Median annualized return rate")
     axes[0].legend(fontsize=8)
     fig.tight_layout()
     fig.savefig(output_dir / "portfolio_plateau_comparison.png", dpi=180)
@@ -905,33 +1017,55 @@ def plot_all(
     plot_faceted_timeseries(
         selected,
         output_dir,
-        "median_return_rate_change",
+        "median_annualized_return_rate",
         "portfolio_faceted_return_rate_timeseries.png",
-        "median rate change",
-        "Return-rate-change distributions",
+        "median annualized return rate",
+        "Annualized return-rate distributions",
     )
     plot_faceted_timeseries(
         selected,
         output_dir,
-        "risk_stddev",
+        "annualized_return_rate_risk_stddev",
         "portfolio_faceted_risk_timeseries.png",
-        "risk standard deviation",
-        "Risk distributions",
+        "annualized return-rate risk (SD)",
+        "Annualized return-rate risk distributions",
     )
-    plot_sensitivity_heatmaps(selected, output_dir, "median_return_rate_change", "portfolio_final_return_sensitivity.png", "median return-rate change")
-    plot_sensitivity_heatmaps(selected, output_dir, "risk_stddev", "portfolio_final_risk_sensitivity.png", "risk standard deviation")
+    plot_sensitivity_heatmaps(selected, output_dir, "median_annualized_return_rate", "portfolio_final_return_sensitivity.png", "median annualized return rate")
+    plot_sensitivity_heatmaps(selected, output_dir, "annualized_return_rate_risk_stddev", "portfolio_final_risk_sensitivity.png", "annualized return-rate risk (SD)")
     plot_plateau_comparison(selected, output_dir)
     if frontier_points is not None:
-        pareto_assets = per_bracket_pareto_assets(frontier_points) if pareto_assets is None else pareto_assets
+        pareto_assets = (
+            per_bracket_pareto_assets(
+                frontier_points,
+                risk_column="annualized_return_rate_risk_stddev",
+                reward_column="median_annualized_return_rate",
+            )
+            if pareto_assets is None
+            else pareto_assets
+        )
         plot_efficiency_risk_frontier(frontier_points, output_dir, one_column, selected, pareto_assets)
+        plot_efficiency_risk_frontier(frontier_points, output_dir, one_column, selected, pareto_assets, symlog=True)
         plot_efficiency_risk_frontier_by_asset_mix(frontier_points, output_dir, simulation_months, one_column, selected, pareto_assets)
+        plot_efficiency_risk_frontier_by_asset_mix(frontier_points, output_dir, simulation_months, one_column, selected, pareto_assets, symlog=True)
         plot_efficiency_risk_frontier_by_size(frontier_points, output_dir, one_column, selected, pareto_assets)
+        plot_efficiency_risk_frontier_by_size(frontier_points, output_dir, one_column, selected, pareto_assets, symlog=True)
         plot_efficiency_risk_frontier_by_size_empirical(frontier_points, output_dir, one_column, selected, pareto_assets)
+        plot_efficiency_risk_frontier_by_size_empirical(frontier_points, output_dir, one_column, selected, pareto_assets, symlog=True)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--replot-only", action="store_true", help="Regenerate all plots from portfolio_scenario_manifest.csv without resimulating.")
+    parser.add_argument(
+        "--no-plots",
+        action="store_true",
+        help="Write sweep CSVs without generating plots. Use this for parallel array workers.",
+    )
+    parser.add_argument(
+        "--skip-combined-summary",
+        action="store_true",
+        help="Do not write the cross-profile summary in the parent output directory.",
+    )
     parser.add_argument("--years", type=float, default=3.0)
     parser.add_argument("--resolution-months", type=int, default=3)
     parser.add_argument("--runs", type=int, default=100)
@@ -951,8 +1085,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hardware-calibration", choices=sorted(HARDWARE_CALIBRATIONS), default="h100-gemma4-31b")
     parser.add_argument("--embargo-shock-probability", type=float, default=0.05)
     parser.add_argument("--embargo-rollback-months", type=int, default=6)
+    parser.add_argument(
+        "--stochastic-shocks",
+        action="store_true",
+        help="Replace deterministic token-cost and plateau scenarios with persistent stochastic shock combinations.",
+    )
+    parser.add_argument("--sudden-break-even-probability-per-month", type=float, default=0.01)
+    parser.add_argument("--gradual-break-even-probability-per-month", type=float, default=0.01)
+    parser.add_argument("--capability-plateau-probability-per-month", type=float, default=0.01)
     parser.add_argument("--confidential-mixing-ratio", type=float, default=0.5)
     parser.add_argument("--confidential-mixing-penalty", type=float, default=0.5)
+    parser.add_argument("--zero-risk-confidential-work-share", type=float, default=0.20)
+    parser.add_argument("--disable-counterfactual-skill-growth", action="store_true")
+    parser.add_argument("--counterfactual-skill-growth-rate-per-year", type=float, default=0.015)
     parser.add_argument("--cloud-oss-hours-per-usage-unit-period", type=float, default=None)
     parser.add_argument("--disable-it-support", action="store_true", help="Disable the default 0.5-FTE IT-support cost for small on-premise and OSS-cloud companies.")
     parser.add_argument("--it-support-max-users", type=int, default=50, help="Apply the IT-support cost at or below this employee count.")
@@ -982,6 +1127,14 @@ def selected_company_profiles(args: argparse.Namespace) -> dict[str, dict[str, f
     return {name: COMPANY_PROFILES[name] for name in names}
 
 
+def company_profile_index(name: str) -> int:
+    """Return the stable seed index used by a named built-in profile."""
+    try:
+        return list(COMPANY_PROFILES).index(name)
+    except ValueError:
+        return 0
+
+
 def run_company_profile(
     name: str,
     employee_mix: dict[str, float],
@@ -997,7 +1150,7 @@ def run_company_profile(
         output_dir=output_dir,
         seed=base_config.seed + profile_index * 10_000_019,
     )
-    scenarios = scenario_grid()
+    scenarios = scenario_grid(config.stochastic_shocks)
     executor_cls = ThreadPoolExecutor if config.backend == "torch-mps" else ProcessPoolExecutor
     selected_frames = []
     frontier_point_frames = []
@@ -1024,10 +1177,15 @@ def run_company_profile(
     selected.to_csv(output_dir / "portfolio_scenario_manifest.csv", index=False)
     frontier_points = pd.concat(frontier_point_frames, ignore_index=True)
     frontier_points.to_csv(output_dir / "portfolio_efficiency_risk_points.csv", index=False)
-    pareto_assets = per_bracket_pareto_assets(frontier_points)
+    pareto_assets = per_bracket_pareto_assets(
+        frontier_points,
+        risk_column="annualized_return_rate_risk_stddev",
+        reward_column="median_annualized_return_rate",
+    )
     write_per_bracket_pareto_csvs(pareto_assets, output_dir)
     write_wide_csvs(selected, output_dir)
-    plot_all(selected, output_dir, frontier_points, args.figure_width == "one-column", config.periods * config.resolution_months, pareto_assets)
+    if not args.no_plots:
+        plot_all(selected, output_dir, frontier_points, args.figure_width == "one-column", config.periods * config.resolution_months, pareto_assets)
     print(f"Wrote {name} portfolio sweep outputs to {output_dir}")
 
 
@@ -1043,13 +1201,31 @@ def main() -> None:
             manifest = output_dir / "portfolio_scenario_manifest.csv"
             points_path = output_dir / "portfolio_efficiency_risk_points.csv"
             frontier_points = pd.read_csv(points_path) if points_path.exists() else None
-            pareto_assets = per_bracket_pareto_assets(frontier_points) if frontier_points is not None else pd.DataFrame()
+            required_annualized_columns = {
+                "median_annualized_return_rate",
+                "annualized_return_rate_risk_stddev",
+            }
+            if frontier_points is not None and not required_annualized_columns.issubset(frontier_points.columns):
+                raise SystemExit(
+                    "This sweep predates annualized return-rate frontier data; rerun the simulation before replotting."
+                )
+            pareto_assets = (
+                per_bracket_pareto_assets(
+                    frontier_points,
+                    risk_column="annualized_return_rate_risk_stddev",
+                    reward_column="median_annualized_return_rate",
+                )
+                if frontier_points is not None
+                else pd.DataFrame()
+            )
             if frontier_points is not None:
                 write_per_bracket_pareto_csvs(pareto_assets, output_dir)
-            plot_all(pd.read_csv(manifest), output_dir, frontier_points, args.figure_width == "one-column", args.years * 12, pareto_assets)
+            if not args.no_plots:
+                plot_all(pd.read_csv(manifest), output_dir, frontier_points, args.figure_width == "one-column", args.years * 12, pareto_assets)
             print(f"Replotted outputs from {manifest}")
-        combined_points = pd.concat([pd.read_csv(output_dir / "portfolio_efficiency_risk_points.csv") for output_dir in output_dirs], ignore_index=True)
-        write_pareto_markdown_table(combined_points, args.output_dir / "portfolio_per_bracket_pareto_table.md")
+        if not args.skip_combined_summary:
+            combined_points = pd.concat([pd.read_csv(output_dir / "portfolio_efficiency_risk_points.csv") for output_dir in output_dirs], ignore_index=True)
+            write_pareto_markdown_table(combined_points, args.output_dir / "portfolio_per_bracket_pareto_table.md")
         return
     if args.resolution_months <= 0 or 18 % args.resolution_months != 0:
         raise SystemExit("--resolution-months must be a positive divisor of 18 so the plateau occurs exactly after 18 months.")
@@ -1059,10 +1235,21 @@ def main() -> None:
         raise SystemExit("--embargo-shock-probability must be between 0 and 1.")
     if args.embargo_rollback_months < 0:
         raise SystemExit("--embargo-rollback-months must be non-negative.")
+    for option_name in (
+        "sudden_break_even_probability_per_month",
+        "gradual_break_even_probability_per_month",
+        "capability_plateau_probability_per_month",
+    ):
+        if not 0.0 <= getattr(args, option_name) <= 1.0:
+            raise SystemExit(f"--{option_name.replace('_', '-')} must be between 0 and 1.")
     if not 0.0 <= args.confidential_mixing_ratio <= 1.0:
         raise SystemExit("--confidential-mixing-ratio must be between 0 and 1.")
     if not 0.0 <= args.confidential_mixing_penalty <= 1.0:
         raise SystemExit("--confidential-mixing-penalty must be between 0 and 1.")
+    if not 0.0 <= args.zero_risk_confidential_work_share <= 1.0:
+        raise SystemExit("--zero-risk-confidential-work-share must be between 0 and 1.")
+    if args.counterfactual_skill_growth_rate_per_year < 0:
+        raise SystemExit("--counterfactual-skill-growth-rate-per-year must be non-negative.")
     if args.cloud_oss_hours_per_usage_unit_period is not None and args.cloud_oss_hours_per_usage_unit_period <= 0:
         raise SystemExit("--cloud-oss-hours-per-usage-unit-period must be positive.")
     if args.it_support_max_users < 0:
@@ -1084,19 +1271,27 @@ def main() -> None:
         engineering_context=args.engineering_context, backend=_resolve_backend(args.backend), output_dir=args.output_dir,
         embargo_shock_probability=args.embargo_shock_probability,
         embargo_rollback_months=args.embargo_rollback_months,
+        stochastic_shocks=args.stochastic_shocks,
+        sudden_break_even_probability_per_month=args.sudden_break_even_probability_per_month,
+        gradual_break_even_probability_per_month=args.gradual_break_even_probability_per_month,
+        capability_plateau_probability_per_month=args.capability_plateau_probability_per_month,
         confidential_mixing_ratio=args.confidential_mixing_ratio,
         confidential_mixing_penalty=args.confidential_mixing_penalty,
+        zero_risk_confidential_work_share=args.zero_risk_confidential_work_share,
+        counterfactual_skill_growth_enabled=not args.disable_counterfactual_skill_growth,
+        counterfactual_skill_growth_rate_per_year=args.counterfactual_skill_growth_rate_per_year,
         cloud_oss_hours_per_usage_unit_period=args.cloud_oss_hours_per_usage_unit_period,
         it_support_enabled=not args.disable_it_support,
         it_support_max_users=args.it_support_max_users,
     )
-    for profile_index, (name, employee_mix) in enumerate(profiles.items()):
-        run_company_profile(name, employee_mix, base_config, args, profile_index)
-    combined_points = pd.concat(
-        [pd.read_csv(args.output_dir / name / "portfolio_efficiency_risk_points.csv") for name in profiles],
-        ignore_index=True,
-    )
-    write_pareto_markdown_table(combined_points, args.output_dir / "portfolio_per_bracket_pareto_table.md")
+    for name, employee_mix in profiles.items():
+        run_company_profile(name, employee_mix, base_config, args, company_profile_index(name))
+    if not args.skip_combined_summary:
+        combined_points = pd.concat(
+            [pd.read_csv(args.output_dir / name / "portfolio_efficiency_risk_points.csv") for name in profiles],
+            ignore_index=True,
+        )
+        write_pareto_markdown_table(combined_points, args.output_dir / "portfolio_per_bracket_pareto_table.md")
 
 
 if __name__ == "__main__":
