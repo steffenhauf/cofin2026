@@ -24,7 +24,11 @@ from simulate_llm_efficiency import (
     HARDWARE_CALIBRATIONS,
     HARDWARE_SCENARIOS,
     SimulationConfig,
+    SIMULATION_DEFAULTS,
+    SWEEP_DEFAULTS,
     _hardware_calibration_profile,
+    configuration_path_from_argv,
+    load_simulation_configuration,
     _resolve_backend,
     run_simulation,
     summarize,
@@ -545,34 +549,41 @@ def _plot_frontier_timeseries(frontier_timeseries: pd.DataFrame, output_dir: Pat
 
 
 def parse_args() -> argparse.Namespace:
+    config_path = configuration_path_from_argv()
+    try:
+        load_simulation_configuration(config_path)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    defaults = SWEEP_DEFAULTS["budget_frontier"]
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, default=config_path, help="YAML configuration file (default: simulation_config.yaml).")
     parser.add_argument("--replot-only", action="store_true", help="Reuse budget_frontier_selections.csv in --output-dir and regenerate plots only.")
-    parser.add_argument("--users", type=int, default=500)
-    parser.add_argument("--years", type=float, default=3.0)
-    parser.add_argument("--resolution-months", type=int, default=3)
-    parser.add_argument("--runs", type=int, default=200)
-    parser.add_argument("--concurrency", type=int, default=4)
-    parser.add_argument("--simulation-concurrency", type=int, default=1)
-    parser.add_argument("--seed", type=int, default=20260707)
-    parser.add_argument("--plateau-quarter", type=int, default=5)
+    parser.add_argument("--users", type=int, default=defaults["users"])
+    parser.add_argument("--years", type=float, default=defaults["years"])
+    parser.add_argument("--resolution-months", type=int, default=defaults["resolution_months"])
+    parser.add_argument("--runs", type=int, default=defaults["runs"])
+    parser.add_argument("--concurrency", type=int, default=defaults["concurrency"])
+    parser.add_argument("--simulation-concurrency", type=int, default=defaults["simulation_concurrency"])
+    parser.add_argument("--seed", type=int, default=defaults["seed"])
+    parser.add_argument("--plateau-quarter", type=int, default=defaults["plateau_quarter"])
     parser.add_argument("--employee-mix", type=str, default=None)
     parser.add_argument(
         "--engineering-context",
         choices=["bounded", "maintenance", "mixed"],
-        default="mixed",
+        default=SIMULATION_DEFAULTS["engineering_context"],
     )
     parser.add_argument("--backend", choices=["numpy", "numba", "torch-mps", "auto"], default="auto")
     parser.add_argument("--total-budget-usd", type=float, default=None)
-    parser.add_argument("--service-budget-min-usd", type=float, default=0.0)
+    parser.add_argument("--service-budget-min-usd", type=float, default=defaults["service_budget_min_usd"])
     parser.add_argument("--service-budget-max-usd", type=float, default=None)
-    parser.add_argument("--service-budget-points", type=int, default=5)
-    parser.add_argument("--hardware-budget-min-usd", type=float, default=0.0)
+    parser.add_argument("--service-budget-points", type=int, default=defaults["service_budget_points"])
+    parser.add_argument("--hardware-budget-min-usd", type=float, default=defaults["hardware_budget_min_usd"])
     parser.add_argument("--hardware-budget-max-usd", type=float, default=None)
-    parser.add_argument("--hardware-budget-points", type=int, default=5)
-    parser.add_argument("--confidential-document-fraction", type=float, default=0.0)
-    parser.add_argument("--usd-per-service-cost-index-quarter", type=float, default=60.0)
+    parser.add_argument("--hardware-budget-points", type=int, default=defaults["hardware_budget_points"])
+    parser.add_argument("--confidential-document-fraction", type=float, default=SIMULATION_DEFAULTS["confidential_document_fraction"])
+    parser.add_argument("--usd-per-service-cost-index-quarter", type=float, default=SIMULATION_DEFAULTS["usd_per_service_cost_index_quarter"])
     parser.add_argument("--usd-per-hardware-capex-index", type=float, default=None)
-    parser.add_argument("--hardware-calibration", choices=sorted(HARDWARE_CALIBRATIONS), default="h100-gemma4-31b")
+    parser.add_argument("--hardware-calibration", choices=sorted(HARDWARE_CALIBRATIONS), default=SIMULATION_DEFAULTS["hardware_calibration"])
     parser.add_argument("--output-dir", type=Path, default=Path("budget_sweep_outputs"))
     return parser.parse_args()
 

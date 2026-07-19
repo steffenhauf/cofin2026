@@ -16,9 +16,21 @@ from sweep_portfolio_rate_changes import (
     friendly_label,
     hardware_for_budget,
     hardware_selection_for_budget,
+    paired_future_return_rates,
+    select_portfolios,
+    _apply_frontier_x_limits,
     write_pareto_markdown_table,
     write_wide_csvs,
 )
+
+
+def test_linear_frontier_x_limits_are_applied_only_when_requested():
+    import matplotlib.pyplot as plt
+
+    figure, axis = plt.subplots()
+    _apply_frontier_x_limits(axis, (-0.1, 0.5))
+    assert axis.get_xlim() == (-0.1, 0.5)
+    plt.close(figure)
 
 
 def test_company_profiles_are_complete_workforce_mixes():
@@ -104,7 +116,7 @@ def test_wide_csvs_share_column_layout(tmp_path):
     )
     write_wide_csvs(selected, tmp_path)
     returns = pd.read_csv(tmp_path / "portfolio_rate_changes.csv")
-    risks = pd.read_csv(tmp_path / "portfolio_rate_change_risk.csv")
+    risks = pd.read_csv(tmp_path / "portfolio_return_rate_risk.csv")
     assert returns.columns.tolist() == risks.columns.tolist()
 
 
@@ -176,3 +188,86 @@ def test_monthly_period_scaling_and_annualized_pareto_labels(tmp_path):
     assert "annualized return rate" in text
     assert "Global API (0.800, 0.200)" in text
     assert "cloud_api_only / cloud" not in text
+
+
+def test_pareto_selection_excludes_zero_risk_existing_tools_baseline():
+    from sweep_portfolio_rate_changes import per_bracket_pareto_assets
+
+    points = pd.DataFrame(
+        {
+            "users": [50, 50],
+            "hardware": ["cloud_api_only", "onprem_full_capacity"],
+            "service_provider": ["global_service", "local_hardware"],
+            "median_efficiency_gain": [0.01, 0.03],
+            "median_zero_risk_efficiency_gain": [0.01, 0.01],
+            "efficiency_gain_risk_stddev": [0.0, 0.2],
+        }
+    )
+    selected = per_bracket_pareto_assets(points)
+    assert selected["hardware"].eq("onprem_full_capacity").all()
+
+
+def test_portfolio_selection_keeps_one_final_frontier_asset_for_all_months():
+    identities = {
+        "model": ["frontier_growth", "frontier_growth"] * 2,
+        "token_cost": ["flat", "flat"] * 2,
+        "access_plan": ["pay_per_use", "pay_per_use"] * 2,
+        "hardware": ["cloud_api_only", "onprem_full_capacity"] * 2,
+        "hardware_refresh": ["maxed_out", "maxed_out"] * 2,
+        "local_fallback": ["persona_choice", "persona_choice"] * 2,
+        "service_provider": ["global_service", "global_service"] * 2,
+        "shock_combination": ["none", "none"] * 2,
+    }
+    summary = pd.DataFrame(
+        {
+            **identities,
+            "period": [0, 0, 1, 1],
+            "month": [0, 0, 3, 3],
+            "median_return_rate_change": [0.1, 0.2, 0.4, 0.3],
+            "risk_stddev": [0.1, 0.2, 0.1, 0.3],
+            "median_annualized_return_rate": [0.2, 0.3, 0.9, 0.4],
+            "annualized_return_rate_risk_stddev": [0.2, 0.3, 0.1, 0.4],
+            "median_efficiency_gain": [0.1] * 4,
+            "efficiency_gain_risk_stddev": [0.1] * 4,
+            "median_zero_risk_efficiency_gain": [0.0] * 4,
+        }
+    )
+    selected = select_portfolios(summary, SweepScenario(50, 10.0, 0.0, 0.0, False), {})
+    assert selected.groupby("portfolio")["hardware"].nunique().eq(1).all()
+    assert selected.groupby("portfolio")["month"].nunique().eq(2).all()
+
+
+def test_paired_future_paths_keep_each_run_aligned_across_selected_assets():
+    identities = {
+        "model": ["frontier_growth", "frontier_growth"],
+        "token_cost": ["flat", "flat"],
+        "access_plan": ["pay_per_use", "pay_per_use"],
+        "hardware": ["cloud_api_only", "onprem_full_capacity"],
+        "hardware_refresh": ["maxed_out", "maxed_out"],
+        "local_fallback": ["persona_choice", "persona_choice"],
+        "service_provider": ["global_service", "local_hardware"],
+        "shock_combination": ["none", "none"],
+    }
+    selected = pd.DataFrame(
+        {
+            **identities,
+            "portfolio": ["low_risk", "optimum"],
+            "period": [1, 1],
+            "selection_period": [1, 1],
+            "column_label": ["low asset", "optimum asset"],
+        }
+    )
+    rows = []
+    for run in (0, 1):
+        for period, month in ((0, 0), (1, 3)):
+            for asset, base_return in enumerate((0.2, 0.4)):
+                row = {column: values[asset] for column, values in identities.items()}
+                row.update(run=run, period=period, month=month, annualized_return_rate=base_return + run + period)
+                rows.append(row)
+    paths, manifest = paired_future_return_rates(
+        pd.DataFrame(rows), selected, SweepScenario(50, 10.0, 0.0, 0.0, False), "mixed"
+    )
+    assert paths.columns.tolist()[-3:] == ["low_risk", "optimum", "high_gain"]
+    assert paths.shape[0] == 4
+    assert paths.loc[(paths["future_id"] == 1) & (paths["month"] == 3), "optimum"].item() == 2.4
+    assert manifest["portfolio"].tolist() == ["low_risk", "optimum"]

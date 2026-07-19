@@ -31,8 +31,12 @@ from simulate_llm_efficiency import (
     SHOCK_COMBINATIONS,
     TOKEN_SCENARIOS,
     SimulationConfig,
+    SIMULATION_DEFAULTS,
+    SWEEP_DEFAULTS,
     _hardware_calibration_profile,
+    configuration_path_from_argv,
     hardware_purchase_cost_usd,
+    load_simulation_configuration,
     _resolve_backend,
     _simulate_one_scenario,
 )
@@ -43,6 +47,12 @@ SERVICE_BUDGETS_USD = (5.0, 10.0, 25.0, 50.0)
 HARDWARE_BUDGETS_USD = (0.0, 10_000.0, 50_000.0, 100_000.0, 500_000.0, 1_000_000.0)
 CONFIDENTIAL_SHARES = (0.0, 0.1, 0.25, 0.5, 0.9)
 PORTFOLIOS = ("low_risk", "optimum", "high_gain")
+SERVICE_SLEEVES = {
+    "global_service": "global_cloud",
+    "european_service": "eu_cloud",
+    "local_hardware": "onprem_oss",
+    "eu_cloud_oss": "cloud_oss",
+}
 COMPANY_PROFILES = {
     "administration_heavy": {
         "software_engineering": 0.05,
@@ -237,10 +247,15 @@ def simulate_portfolio_scenario(
         output_dir=base_config.output_dir,
     )
     frames = []
-    asset_names = (hardware_name, "cloud_oss")
-    for offset, asset_name in enumerate(asset_names):
+    # Evaluate all four investable service sleeves under the same organisation
+    # scenario; this is required for a covariance-aware service mix.
+    asset_names = tuple(dict.fromkeys(("cloud_api_only", hardware_name, "cloud_oss")))
+    for asset_name in asset_names:
         for model_scenario in simulation_scenarios(asset_name, scenario.plateau, config.hardware_calibration, config.stochastic_shocks):
-            frames.append(_simulate_one_scenario((*model_scenario[:7], config, config.seed + offset * 1009, model_scenario[7])))
+            # Every candidate asset starts each run from the same random seed.
+            # Its run number can therefore be used as a paired future identifier
+            # when comparing assets in an external portfolio analysis.
+            frames.append(_simulate_one_scenario((*model_scenario[:7], config, config.seed, model_scenario[7])))
     unit_cost_usd = hardware_purchase_cost_usd(hardware_calibration, hardware_name)
     replicas = int(scenario.hardware_budget_usd // unit_cost_usd) if unit_cost_usd else 0
     metadata = {
@@ -252,15 +267,34 @@ def simulate_portfolio_scenario(
     return pd.concat(frames, ignore_index=True), metadata
 
 
+ASSET_IDENTITY_COLUMNS = [
+    "model",
+    "token_cost",
+    "access_plan",
+    "hardware",
+    "hardware_refresh",
+    "local_fallback",
+    "service_provider",
+    "shock_combination",
+]
+
+
 def return_change_summary(results: pd.DataFrame) -> pd.DataFrame:
-    ordered = results.sort_values(["scenario", "run", "period"]).copy()
-    ordered["return_rate_change"] = ordered.groupby(["scenario", "run"], sort=False)["return_rate"].diff().fillna(0.0)
-    group_cols = ["scenario", "model", "token_cost", "access_plan", "hardware", "hardware_refresh", "local_fallback", "service_provider", "shock_combination", "period", "month"]
+    """Create one virtual representative asset per fixed identity and period.
+
+    Return-rate changes remain available as a descriptive series. Risk is the
+    cross-run standard deviation of each asset's return rate at the same month,
+    matching the mean-variance definition used for portfolio selection.
+    """
+    run_cols = [*ASSET_IDENTITY_COLUMNS, "run"]
+    ordered = results.sort_values([*run_cols, "period"]).copy()
+    ordered["return_rate_change"] = ordered.groupby(run_cols, sort=False)["return_rate"].diff().fillna(0.0)
+    group_cols = [*ASSET_IDENTITY_COLUMNS, "period", "month"]
     return (
         ordered.groupby(group_cols, sort=False)
         .agg(
             median_return_rate_change=("return_rate_change", "median"),
-            risk_stddev=("return_rate_change", "std"),
+            risk_stddev=("return_rate", "std"),
             median_annualized_return_rate=("annualized_return_rate", "median"),
             annualized_return_rate_risk_stddev=("annualized_return_rate", "std"),
             median_efficiency_gain=("mean_efficiency_gain", "median"),
@@ -321,33 +355,50 @@ def _choose(
     return eligible.sort_values([risk_column, reward_column], ascending=[True, False]).iloc[0], "gain >= mean + 3 sigma"
 
 
+def _asset_label(row: pd.Series, scenario: SweepScenario) -> str:
+    return (
+        f"{scenario.users} employees | ${scenario.service_budget_per_person_usd:g}/person/month service | "
+        f"${scenario.hardware_budget_usd:,.0f} upfront hardware | {scenario.confidential_share:.0%} confidential documents | "
+        f"{'plateau after 18 months' if scenario.plateau else 'continuous capability improvement'} | "
+        f"model={row['model']} | access={row['access_plan']} | hardware={row['hardware']} | "
+        f"token={row['token_cost']} | refresh={row['hardware_refresh']} | fallback={row['local_fallback']} | "
+        f"provider={row['service_provider']} | shocks={row['shock_combination']}"
+    )
+
+
 def select_portfolios(summary: pd.DataFrame, scenario: SweepScenario, metadata: dict[str, object]) -> pd.DataFrame:
+    """Choose three final-period frontier assets and retain their fixed histories."""
+    final_period = summary["period"].max()
+    frontier = efficient_frontier(
+        summary[summary["period"] == final_period],
+        "annualized_return_rate_risk_stddev",
+        "median_annualized_return_rate",
+    )
+    if frontier.empty:
+        return pd.DataFrame()
+
     rows = []
-    for (period, month), points in summary.groupby(["period", "month"], sort=True):
-        frontier = efficient_frontier(
-            points,
+    for portfolio in PORTFOLIOS:
+        selected, rule = _choose(
+            frontier,
+            portfolio,
             "annualized_return_rate_risk_stddev",
             "median_annualized_return_rate",
         )
-        if frontier.empty:
-            continue
-        for portfolio in PORTFOLIOS:
-            selected, rule = _choose(
-                frontier,
-                portfolio,
-                "annualized_return_rate_risk_stddev",
-                "median_annualized_return_rate",
-            )
-            row = selected.to_dict()
-            provider_labels = {
-                "global_service": "global service",
-                "european_service": "European service",
-                "local_hardware": "local hardware",
-            }
-            row.update(
+        selected_history = summary.merge(
+            selected[ASSET_IDENTITY_COLUMNS].to_frame().T,
+            on=ASSET_IDENTITY_COLUMNS,
+            how="inner",
+        )
+        asset_label = _asset_label(selected, scenario)
+        for _, row in selected_history.iterrows():
+            record = row.to_dict()
+            record.update(
                 portfolio=portfolio,
                 selection_rule=rule,
-                column_label=friendly_label(scenario, portfolio) + f" | {provider_labels.get(selected.get('service_provider'), selected.get('service_provider', 'service'))} | shocks: {selected.get('shock_combination', 'none')}",
+                selection_period=final_period,
+                asset_column_label=asset_label,
+                column_label=friendly_label(scenario, portfolio) + " | " + asset_label,
                 users=scenario.users,
                 service_budget_per_person_usd=scenario.service_budget_per_person_usd,
                 hardware_budget_usd=scenario.hardware_budget_usd,
@@ -355,15 +406,129 @@ def select_portfolios(summary: pd.DataFrame, scenario: SweepScenario, metadata: 
                 capability_plateau_after_18_months=scenario.plateau,
                 **metadata,
             )
-            rows.append(row)
+            rows.append(record)
     return pd.DataFrame(rows)
 
 
 def write_wide_csvs(selected: pd.DataFrame, output_dir: Path) -> None:
-    for metric, filename in (("median_return_rate_change", "portfolio_rate_changes.csv"), ("risk_stddev", "portfolio_rate_change_risk.csv")):
+    for metric, filename in (("median_return_rate_change", "portfolio_rate_changes.csv"), ("risk_stddev", "portfolio_return_rate_risk.csv")):
         wide = selected.pivot(index="month", columns="column_label", values=metric).reset_index()
         wide = wide.reindex(columns=["month", *sorted(selected["column_label"].unique())])
         wide.to_csv(output_dir / filename, index=False)
+
+
+def paired_future_return_rates(
+    results: pd.DataFrame,
+    selected: pd.DataFrame,
+    scenario: SweepScenario,
+    company_profile: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Return compact, run-paired annualized return-rate paths for Excel."""
+    if selected.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    final_selected = selected[selected["period"] == selected["selection_period"]].copy()
+    final_selected = final_selected.drop_duplicates("portfolio")
+    selection_columns = ["portfolio", "column_label", *ASSET_IDENTITY_COLUMNS]
+    selection = final_selected[selection_columns]
+    paired = results.merge(selection, on=ASSET_IDENTITY_COLUMNS, how="inner", validate="many_to_many")
+    organization_scenario_id = (
+        f"{company_profile}|users={scenario.users}|service_usd={scenario.service_budget_per_person_usd:g}|"
+        f"hardware_usd={scenario.hardware_budget_usd:g}|confidential={scenario.confidential_share:g}|plateau={scenario.plateau}"
+    )
+    paired["organization_scenario_id"] = organization_scenario_id
+    index = ["organization_scenario_id", "run", "period", "month"]
+    wide = (
+        paired.pivot(index=index, columns="portfolio", values="annualized_return_rate")
+        .reindex(columns=PORTFOLIOS)
+        .reset_index()
+        .rename(columns={"run": "future_id"})
+    )
+    manifest = final_selected[["portfolio", "column_label", *ASSET_IDENTITY_COLUMNS]].copy()
+    manifest.insert(0, "organization_scenario_id", organization_scenario_id)
+    return wide, manifest
+
+
+def write_paired_future_return_rates(
+    paths: pd.DataFrame,
+    manifest: pd.DataFrame,
+    output_dir: Path,
+) -> None:
+    paths.to_csv(output_dir / "portfolio_paired_future_return_rates.csv", index=False)
+    manifest.to_csv(output_dir / "portfolio_paired_future_manifest.csv", index=False)
+
+
+def service_sleeve_statistics(
+    results: pd.DataFrame,
+    summary: pd.DataFrame,
+    scenario: SweepScenario,
+    company_profile: str,
+    min_incremental_efficiency_gain: float,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Choose one efficient asset per service sleeve and retain paired covariance."""
+    final_period = int(summary["period"].max())
+    final = summary[summary["period"] == final_period].copy()
+    final["service_sleeve"] = final["service_provider"].map(SERVICE_SLEEVES)
+    baseline = final["median_zero_risk_efficiency_gain"]
+    final = final[final["median_efficiency_gain"] > baseline + min_incremental_efficiency_gain + 1e-12]
+    chosen_rows = []
+    for sleeve in SERVICE_SLEEVES.values():
+        candidates = final[final["service_sleeve"] == sleeve]
+        frontier = efficient_frontier(candidates, "annualized_return_rate_risk_stddev", "median_annualized_return_rate")
+        if frontier.empty:
+            return pd.DataFrame(), pd.DataFrame()
+        positive = frontier[frontier["annualized_return_rate_risk_stddev"] > 0.0].copy()
+        if positive.empty:
+            chosen = frontier.sort_values("median_annualized_return_rate", ascending=False).iloc[0]
+        else:
+            chosen = positive.loc[(positive["median_annualized_return_rate"] / positive["annualized_return_rate_risk_stddev"]).idxmax()]
+        chosen_rows.append(chosen)
+    chosen = pd.DataFrame(chosen_rows)
+    selected = chosen[["service_sleeve", *ASSET_IDENTITY_COLUMNS]]
+    selected_results = results.merge(selected, on=ASSET_IDENTITY_COLUMNS, how="inner")
+    scenario_id = (
+        f"{company_profile}|users={scenario.users}|service_usd={scenario.service_budget_per_person_usd:g}|"
+        f"hardware_usd={scenario.hardware_budget_usd:g}|confidential={scenario.confidential_share:g}|plateau={scenario.plateau}"
+    )
+    record: dict[str, object] = {
+        "organization_scenario_id": scenario_id,
+        "company_profile": company_profile,
+        "users": scenario.users,
+        "service_usd": scenario.service_budget_per_person_usd,
+        "hardware_usd": scenario.hardware_budget_usd,
+        "confidential": scenario.confidential_share,
+        "plateau": str(scenario.plateau),
+    }
+    records = []
+    for (period, month), period_results in selected_results.groupby(["period", "month"], sort=True):
+        paired = period_results.pivot(index="run", columns="service_sleeve", values="annualized_return_rate").reindex(columns=list(SERVICE_SLEEVES.values())).dropna()
+        if len(paired) < 2:
+            continue
+        covariance = paired.cov()
+        period_record = {**record, "period": int(period), "month": int(month), "futures": len(paired)}
+        for sleeve in SERVICE_SLEEVES.values():
+            period_record[f"mean_{sleeve}"] = float(paired[sleeve].mean())
+        for left in SERVICE_SLEEVES.values():
+            for right in SERVICE_SLEEVES.values():
+                period_record[f"cov_{left}_{right}"] = float(covariance.loc[left, right])
+        records.append(period_record)
+    manifest = chosen[["service_sleeve", *ASSET_IDENTITY_COLUMNS]].copy()
+    manifest.insert(0, "organization_scenario_id", scenario_id)
+    return pd.DataFrame(records), manifest
+
+
+def write_fixed_asset_csvs(assets: pd.DataFrame, output_dir: Path) -> None:
+    """Export virtual representative-asset histories and their traceability map."""
+    for metric, filename in (
+        ("median_return_rate_change", "portfolio_fixed_asset_rate_changes.csv"),
+        ("risk_stddev", "portfolio_fixed_asset_rate_change_risk.csv"),
+    ):
+        wide = assets.pivot(index="month", columns="asset_column_label", values=metric).reset_index()
+        wide = wide.reindex(columns=["month", *sorted(assets["asset_column_label"].unique())])
+        wide.to_csv(output_dir / filename, index=False)
+    manifest_columns = ["asset_column_label", *ASSET_IDENTITY_COLUMNS, "users", "service_budget_per_person_usd", "hardware_budget_usd", "confidential_document_share", "capability_plateau_after_18_months", "hardware_calibration", "hardware_replicas", "hardware_cost_usd"]
+    assets[manifest_columns].drop_duplicates().sort_values("asset_column_label").to_csv(
+        output_dir / "portfolio_fixed_asset_manifest.csv", index=False
+    )
 
 
 SERVICE_MARKERS = {
@@ -493,8 +658,9 @@ def per_bracket_pareto_assets(
     grouping_columns: list[str] | None = None,
     risk_column: str = "efficiency_gain_risk_stddev",
     reward_column: str = "median_efficiency_gain",
+    min_incremental_efficiency_gain: float = 0.0,
 ) -> pd.DataFrame:
-    """Select low-risk, optimum, and high-gain assets independently per employee bracket."""
+    """Select Pareto assets above the free existing-tools efficiency baseline."""
     if points.empty:
         return pd.DataFrame()
     grouping_columns = grouping_columns or []
@@ -506,7 +672,13 @@ def per_bracket_pareto_assets(
         group_metadata = dict(zip(group_columns, group_key, strict=True))
         users = group_metadata["users"]
 
-        frontier = efficient_frontier(group, risk_column, reward_column)
+        baseline = (
+            group["median_zero_risk_efficiency_gain"]
+            if "median_zero_risk_efficiency_gain" in group
+            else pd.Series(0.0, index=group.index)
+        )
+        eligible = group[group["median_efficiency_gain"] > baseline + min_incremental_efficiency_gain + 1e-12]
+        frontier = efficient_frontier(eligible, risk_column, reward_column)
         if frontier.empty:
             continue
         scored = frontier.copy()
@@ -532,7 +704,11 @@ def write_per_bracket_pareto_csvs(assets: pd.DataFrame, output_dir: Path) -> Non
         )
 
 
-def write_pareto_markdown_table(points: pd.DataFrame, output_path: Path) -> None:
+def write_pareto_markdown_table(
+    points: pd.DataFrame,
+    output_path: Path,
+    min_incremental_efficiency_gain: float = 0.0,
+) -> None:
     """Write a Markdown matrix grouped by shock assumptions and work mix."""
     stochastic_shocks = (
         "shock_combination" in points
@@ -553,6 +729,7 @@ def write_pareto_markdown_table(points: pd.DataFrame, output_path: Path) -> None
         grouping,
         "annualized_return_rate_risk_stddev" if show_annualized_returns else "efficiency_gain_risk_stddev",
         "median_annualized_return_rate" if show_annualized_returns else "median_efficiency_gain",
+        min_incremental_efficiency_gain,
     )
     if assets.empty:
         return
@@ -678,7 +855,12 @@ def plot_animation(selected: pd.DataFrame, output_dir: Path) -> None:
     figure.write_html(output_dir / "portfolio_risk_return_animation.html", include_plotlyjs="cdn")
 
 
-def plot_efficiency_risk_frontier(points: pd.DataFrame, output_dir: Path, one_column: bool = False, selected: pd.DataFrame | None = None, pareto_assets: pd.DataFrame | None = None, symlog: bool = False) -> None:
+def _apply_frontier_x_limits(ax, x_limits: tuple[float, float] | None) -> None:
+    if x_limits is not None:
+        ax.set_xlim(*x_limits)
+
+
+def plot_efficiency_risk_frontier(points: pd.DataFrame, output_dir: Path, one_column: bool = False, selected: pd.DataFrame | None = None, pareto_assets: pd.DataFrame | None = None, symlog: bool = False, x_limits: tuple[float, float] | None = None) -> None:
     """Plot the final-period annualized return-rate frontier."""
     if points.empty:
         return
@@ -704,6 +886,7 @@ def plot_efficiency_risk_frontier(points: pd.DataFrame, output_dir: Path, one_co
         ax.plot([0.0, end_risk], [0.0, slope * end_risk], "--", color="#7c3aed", linewidth=1.4, label="Best risk-adjusted allocation")
         ax.scatter([tangency[risk]], [tangency[reward]], s=42, color="#7c3aed", zorder=4)
     _apply_frontier_scale(ax, points[risk], points[reward], symlog)
+    _apply_frontier_x_limits(ax, x_limits)
     reward_min, reward_max = float(points[reward].min()), float(points[reward].max())
     reward_margin = max(1e-6, (reward_max - reward_min) * 0.06)
     ax.set_ylim(reward_min - reward_margin, reward_max + reward_margin)
@@ -733,6 +916,7 @@ def plot_efficiency_risk_frontier_by_asset_mix(
     selected: pd.DataFrame | None = None,
     pareto_assets: pd.DataFrame | None = None,
     symlog: bool = False,
+    x_limits: tuple[float, float] | None = None,
 ) -> None:
     """Show the final frontier while encoding company size and spending mix."""
     if points.empty:
@@ -768,6 +952,7 @@ def plot_efficiency_risk_frontier_by_asset_mix(
     if selected is not None:
         _plot_pareto_assets(ax, pareto_assets, values, risk, reward)
     _apply_frontier_scale(ax, values[risk], values[reward], symlog)
+    _apply_frontier_x_limits(ax, x_limits)
     reward_min, reward_max = float(values[reward].min()), float(values[reward].max())
     ax.set_ylim(reward_min - max(1e-6, (reward_max - reward_min) * 0.06), reward_max + max(1e-6, (reward_max - reward_min) * 0.06))
     ax.axvline(0.0, color="#6b7280", linewidth=0.8)
@@ -821,7 +1006,7 @@ def _hyperbolic_frontier_curve(
     return curve_risks, curve_rewards
 
 
-def plot_efficiency_risk_frontier_by_size(points: pd.DataFrame, output_dir: Path, one_column: bool = False, selected: pd.DataFrame | None = None, pareto_assets: pd.DataFrame | None = None, symlog: bool = False) -> None:
+def plot_efficiency_risk_frontier_by_size(points: pd.DataFrame, output_dir: Path, one_column: bool = False, selected: pd.DataFrame | None = None, pareto_assets: pd.DataFrame | None = None, symlog: bool = False, x_limits: tuple[float, float] | None = None) -> None:
     """Show one hyperbola-style annualized return-rate frontier per company size."""
     if points.empty:
         return
@@ -849,6 +1034,7 @@ def plot_efficiency_risk_frontier_by_size(points: pd.DataFrame, output_dir: Path
     if selected is not None:
         _plot_pareto_assets(ax, pareto_assets, points, risk, reward)
     _apply_frontier_scale(ax, points[risk], points[reward], symlog)
+    _apply_frontier_x_limits(ax, x_limits)
     if not one_column:
         ax.set_title("Hyperbolic annualized return-rate frontiers by company size" + (" (symlog axes)" if symlog else ""))
     ax.tick_params(labelsize=7 if one_column else None)
@@ -859,7 +1045,7 @@ def plot_efficiency_risk_frontier_by_size(points: pd.DataFrame, output_dir: Path
     plt.close(fig)
 
 
-def plot_efficiency_risk_frontier_by_size_empirical(points: pd.DataFrame, output_dir: Path, one_column: bool = False, selected: pd.DataFrame | None = None, pareto_assets: pd.DataFrame | None = None, symlog: bool = False) -> None:
+def plot_efficiency_risk_frontier_by_size_empirical(points: pd.DataFrame, output_dir: Path, one_column: bool = False, selected: pd.DataFrame | None = None, pareto_assets: pd.DataFrame | None = None, symlog: bool = False, x_limits: tuple[float, float] | None = None) -> None:
     """Show the observed annualized return-rate frontier points for each company size."""
     if points.empty:
         return
@@ -890,6 +1076,7 @@ def plot_efficiency_risk_frontier_by_size_empirical(points: pd.DataFrame, output
     if selected is not None:
         _plot_pareto_assets(ax, pareto_assets, points, risk, reward)
     _apply_frontier_scale(ax, points[risk], points[reward], symlog)
+    _apply_frontier_x_limits(ax, x_limits)
     if not one_column:
         ax.set_title("Observed annualized return-rate frontiers by company size" + (" (symlog axes)" if symlog else ""))
     ax.tick_params(labelsize=7 if one_column else None)
@@ -1011,6 +1198,7 @@ def plot_all(
     one_column: bool = False,
     simulation_months: float = 36.0,
     pareto_assets: pd.DataFrame | None = None,
+    linear_x_limits: tuple[float, float] | None = None,
 ) -> None:
     plot_month_grid(selected, output_dir)
     plot_animation(selected, output_dir)
@@ -1043,19 +1231,40 @@ def plot_all(
             if pareto_assets is None
             else pareto_assets
         )
-        plot_efficiency_risk_frontier(frontier_points, output_dir, one_column, selected, pareto_assets)
+        plot_efficiency_risk_frontier(frontier_points, output_dir, one_column, selected, pareto_assets, x_limits=linear_x_limits)
         plot_efficiency_risk_frontier(frontier_points, output_dir, one_column, selected, pareto_assets, symlog=True)
-        plot_efficiency_risk_frontier_by_asset_mix(frontier_points, output_dir, simulation_months, one_column, selected, pareto_assets)
+        plot_efficiency_risk_frontier_by_asset_mix(frontier_points, output_dir, simulation_months, one_column, selected, pareto_assets, x_limits=linear_x_limits)
         plot_efficiency_risk_frontier_by_asset_mix(frontier_points, output_dir, simulation_months, one_column, selected, pareto_assets, symlog=True)
-        plot_efficiency_risk_frontier_by_size(frontier_points, output_dir, one_column, selected, pareto_assets)
+        plot_efficiency_risk_frontier_by_size(frontier_points, output_dir, one_column, selected, pareto_assets, x_limits=linear_x_limits)
         plot_efficiency_risk_frontier_by_size(frontier_points, output_dir, one_column, selected, pareto_assets, symlog=True)
-        plot_efficiency_risk_frontier_by_size_empirical(frontier_points, output_dir, one_column, selected, pareto_assets)
+        plot_efficiency_risk_frontier_by_size_empirical(frontier_points, output_dir, one_column, selected, pareto_assets, x_limits=linear_x_limits)
         plot_efficiency_risk_frontier_by_size_empirical(frontier_points, output_dir, one_column, selected, pareto_assets, symlog=True)
 
 
 def parse_args() -> argparse.Namespace:
+    config_path = configuration_path_from_argv()
+    try:
+        load_simulation_configuration(config_path)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    defaults = SWEEP_DEFAULTS["portfolio"]
+    global HEADCOUNTS, SERVICE_BUDGETS_USD, HARDWARE_BUDGETS_USD, CONFIDENTIAL_SHARES, COMPANY_PROFILES
+    HEADCOUNTS = tuple(defaults["headcounts"])
+    SERVICE_BUDGETS_USD = tuple(defaults["service_budgets_usd"])
+    HARDWARE_BUDGETS_USD = tuple(defaults["hardware_budgets_usd"])
+    CONFIDENTIAL_SHARES = tuple(defaults["confidential_shares"])
+    COMPANY_PROFILES = dict(defaults["company_profiles"])
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, default=config_path, help="YAML configuration file (default: simulation_config.yaml).")
     parser.add_argument("--replot-only", action="store_true", help="Regenerate all plots from portfolio_scenario_manifest.csv without resimulating.")
+    parser.add_argument(
+        "--linear-x-limits",
+        nargs=2,
+        type=float,
+        metavar=("MIN", "MAX"),
+        default=None,
+        help="Set the x-axis limits (risk SD) for the linear frontier plots only.",
+    )
     parser.add_argument(
         "--no-plots",
         action="store_true",
@@ -1066,11 +1275,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Do not write the cross-profile summary in the parent output directory.",
     )
-    parser.add_argument("--years", type=float, default=3.0)
-    parser.add_argument("--resolution-months", type=int, default=3)
-    parser.add_argument("--runs", type=int, default=100)
-    parser.add_argument("--concurrency", type=int, default=4, help="Number of independent portfolio scenarios to simulate locally.")
-    parser.add_argument("--seed", type=int, default=20260711)
+    parser.add_argument("--years", type=float, default=defaults["years"])
+    parser.add_argument("--resolution-months", type=int, default=defaults["resolution_months"])
+    parser.add_argument("--runs", type=int, default=defaults["runs"])
+    parser.add_argument("--concurrency", type=int, default=defaults["concurrency"], help="Number of independent portfolio scenarios to simulate locally.")
+    parser.add_argument("--seed", type=int, default=defaults["seed"])
     parser.add_argument("--employee-mix", type=str, default=None)
     parser.add_argument(
         "--company-profiles",
@@ -1078,29 +1287,35 @@ def parse_args() -> argparse.Namespace:
         default=",".join(COMPANY_PROFILES),
         help="Comma-separated work-mix profiles to run. Defaults to all built-in profiles.",
     )
-    parser.add_argument("--engineering-context", choices=["bounded", "maintenance", "mixed"], default="mixed")
+    parser.add_argument("--engineering-context", choices=["bounded", "maintenance", "mixed"], default=SIMULATION_DEFAULTS["engineering_context"])
     parser.add_argument("--backend", choices=["numpy", "numba", "torch-mps", "auto"], default="auto")
-    parser.add_argument("--usd-per-service-cost-index-quarter", type=float, default=60.0)
+    parser.add_argument("--usd-per-service-cost-index-quarter", type=float, default=SIMULATION_DEFAULTS["usd_per_service_cost_index_quarter"])
     parser.add_argument("--usd-per-hardware-capex-index", type=float, default=None)
-    parser.add_argument("--hardware-calibration", choices=sorted(HARDWARE_CALIBRATIONS), default="h100-gemma4-31b")
-    parser.add_argument("--embargo-shock-probability", type=float, default=0.05)
-    parser.add_argument("--embargo-rollback-months", type=int, default=6)
+    parser.add_argument("--hardware-calibration", choices=sorted(HARDWARE_CALIBRATIONS), default=SIMULATION_DEFAULTS["hardware_calibration"])
+    parser.add_argument("--embargo-shock-probability", type=float, default=SIMULATION_DEFAULTS["embargo_shock_probability"])
+    parser.add_argument("--embargo-rollback-months", type=int, default=SIMULATION_DEFAULTS["embargo_rollback_months"])
     parser.add_argument(
         "--stochastic-shocks",
         action="store_true",
         help="Replace deterministic token-cost and plateau scenarios with persistent stochastic shock combinations.",
     )
-    parser.add_argument("--sudden-break-even-probability-per-month", type=float, default=0.01)
-    parser.add_argument("--gradual-break-even-probability-per-month", type=float, default=0.01)
-    parser.add_argument("--capability-plateau-probability-per-month", type=float, default=0.01)
-    parser.add_argument("--confidential-mixing-ratio", type=float, default=0.5)
-    parser.add_argument("--confidential-mixing-penalty", type=float, default=0.5)
-    parser.add_argument("--zero-risk-confidential-work-share", type=float, default=0.20)
+    parser.add_argument("--sudden-break-even-probability-per-month", type=float, default=SIMULATION_DEFAULTS["sudden_break_even_probability_per_month"])
+    parser.add_argument("--gradual-break-even-probability-per-month", type=float, default=SIMULATION_DEFAULTS["gradual_break_even_probability_per_month"])
+    parser.add_argument("--capability-plateau-probability-per-month", type=float, default=SIMULATION_DEFAULTS["capability_plateau_probability_per_month"])
+    parser.add_argument("--confidential-mixing-ratio", type=float, default=SIMULATION_DEFAULTS["confidential_mixing_ratio"])
+    parser.add_argument("--confidential-mixing-penalty", type=float, default=SIMULATION_DEFAULTS["confidential_mixing_penalty"])
+    parser.add_argument("--zero-risk-confidential-work-share", type=float, default=SIMULATION_DEFAULTS["zero_risk_confidential_work_share"])
+    parser.add_argument(
+        "--pareto-min-incremental-efficiency-gain",
+        type=float,
+        default=float(defaults.get("pareto_min_incremental_efficiency_gain", 0.0)),
+        help="Additional median efficiency gain required above the zero-cost existing-tools baseline for Pareto eligibility.",
+    )
     parser.add_argument("--disable-counterfactual-skill-growth", action="store_true")
-    parser.add_argument("--counterfactual-skill-growth-rate-per-year", type=float, default=0.015)
+    parser.add_argument("--counterfactual-skill-growth-rate-per-year", type=float, default=SIMULATION_DEFAULTS.get("counterfactual_skill_growth_rate_per_year", 0.015))
     parser.add_argument("--cloud-oss-hours-per-usage-unit-period", type=float, default=None)
     parser.add_argument("--disable-it-support", action="store_true", help="Disable the default 0.5-FTE IT-support cost for small on-premise and OSS-cloud companies.")
-    parser.add_argument("--it-support-max-users", type=int, default=50, help="Apply the IT-support cost at or below this employee count.")
+    parser.add_argument("--it-support-max-users", type=int, default=SIMULATION_DEFAULTS["it_support_max_users"], help="Apply the IT-support cost at or below this employee count.")
     parser.add_argument(
         "--figure-width",
         choices=["default", "one-column"],
@@ -1108,7 +1323,12 @@ def parse_args() -> argparse.Namespace:
         help="Use one-column for the compact 3.5-inch-wide efficiency-risk frontier figure for a two-column paper.",
     )
     parser.add_argument("--output-dir", type=Path, default=Path("portfolio_sweep_outputs"))
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.linear_x_limits is not None:
+        args.linear_x_limits = tuple(args.linear_x_limits)
+        if args.linear_x_limits[0] >= args.linear_x_limits[1]:
+            raise SystemExit("--linear-x-limits requires MIN to be less than MAX.")
+    return args
 
 
 def parse_employee_mix(value: str | None) -> dict[str, float] | None:
@@ -1153,7 +1373,12 @@ def run_company_profile(
     scenarios = scenario_grid(config.stochastic_shocks)
     executor_cls = ThreadPoolExecutor if config.backend == "torch-mps" else ProcessPoolExecutor
     selected_frames = []
+    asset_timeseries_frames = []
     frontier_point_frames = []
+    paired_future_frames = []
+    paired_future_manifest_frames = []
+    sleeve_statistics_frames = []
+    sleeve_manifest_frames = []
     with executor_cls(max_workers=min(args.concurrency, len(scenarios))) as executor:
         futures = {executor.submit(simulate_portfolio_scenario, scenario, config, index): scenario for index, scenario in enumerate(scenarios)}
         for future in tqdm(as_completed(futures), total=len(futures), desc=f"Sweeping {name}", unit="scenario"):
@@ -1163,6 +1388,26 @@ def run_company_profile(
             selected = select_portfolios(summary, scenario, metadata)
             selected["company_profile"] = name
             selected_frames.append(selected)
+            paired_paths, paired_manifest = paired_future_return_rates(results, selected, scenario, name)
+            paired_future_frames.append(paired_paths)
+            paired_future_manifest_frames.append(paired_manifest)
+            sleeve_statistics, sleeve_manifest = service_sleeve_statistics(
+                results, summary, scenario, name, args.pareto_min_incremental_efficiency_gain
+            )
+            if not sleeve_statistics.empty:
+                sleeve_statistics_frames.append(sleeve_statistics)
+                sleeve_manifest_frames.append(sleeve_manifest)
+            assets = summary.copy()
+            assets["asset_column_label"] = assets.apply(lambda row: _asset_label(row, scenario), axis=1)
+            assets["users"] = scenario.users
+            assets["service_budget_per_person_usd"] = scenario.service_budget_per_person_usd
+            assets["hardware_budget_usd"] = scenario.hardware_budget_usd
+            assets["confidential_document_share"] = scenario.confidential_share
+            assets["capability_plateau_after_18_months"] = scenario.plateau
+            assets["company_profile"] = name
+            for key, value in metadata.items():
+                assets[key] = value
+            asset_timeseries_frames.append(assets)
             final_points = summary[summary["period"] == summary["period"].max()].copy()
             final_points["users"] = scenario.users
             final_points["service_budget_per_person_usd"] = scenario.service_budget_per_person_usd
@@ -1175,17 +1420,40 @@ def run_company_profile(
         ["users", "service_budget_per_person_usd", "hardware_budget_usd", "confidential_document_share", "capability_plateau_after_18_months", "month", "portfolio"]
     )
     selected.to_csv(output_dir / "portfolio_scenario_manifest.csv", index=False)
+    asset_timeseries = pd.concat(asset_timeseries_frames, ignore_index=True)
+    write_fixed_asset_csvs(asset_timeseries, output_dir)
+    write_paired_future_return_rates(
+        pd.concat(paired_future_frames, ignore_index=True),
+        pd.concat(paired_future_manifest_frames, ignore_index=True),
+        output_dir,
+    )
+    if sleeve_statistics_frames:
+        pd.concat(sleeve_statistics_frames, ignore_index=True).to_csv(
+            output_dir / "portfolio_service_sleeve_statistics.csv", index=False
+        )
+        pd.concat(sleeve_manifest_frames, ignore_index=True).to_csv(
+            output_dir / "portfolio_service_sleeve_manifest.csv", index=False
+        )
     frontier_points = pd.concat(frontier_point_frames, ignore_index=True)
     frontier_points.to_csv(output_dir / "portfolio_efficiency_risk_points.csv", index=False)
     pareto_assets = per_bracket_pareto_assets(
         frontier_points,
         risk_column="annualized_return_rate_risk_stddev",
         reward_column="median_annualized_return_rate",
+        min_incremental_efficiency_gain=args.pareto_min_incremental_efficiency_gain,
     )
     write_per_bracket_pareto_csvs(pareto_assets, output_dir)
     write_wide_csvs(selected, output_dir)
     if not args.no_plots:
-        plot_all(selected, output_dir, frontier_points, args.figure_width == "one-column", config.periods * config.resolution_months, pareto_assets)
+        plot_all(
+            selected,
+            output_dir,
+            frontier_points,
+            args.figure_width == "one-column",
+            config.periods * config.resolution_months,
+            pareto_assets,
+            args.linear_x_limits,
+        )
     print(f"Wrote {name} portfolio sweep outputs to {output_dir}")
 
 
@@ -1214,6 +1482,7 @@ def main() -> None:
                     frontier_points,
                     risk_column="annualized_return_rate_risk_stddev",
                     reward_column="median_annualized_return_rate",
+                    min_incremental_efficiency_gain=args.pareto_min_incremental_efficiency_gain,
                 )
                 if frontier_points is not None
                 else pd.DataFrame()
@@ -1221,11 +1490,23 @@ def main() -> None:
             if frontier_points is not None:
                 write_per_bracket_pareto_csvs(pareto_assets, output_dir)
             if not args.no_plots:
-                plot_all(pd.read_csv(manifest), output_dir, frontier_points, args.figure_width == "one-column", args.years * 12, pareto_assets)
+                plot_all(
+                    pd.read_csv(manifest),
+                    output_dir,
+                    frontier_points,
+                    args.figure_width == "one-column",
+                    args.years * 12,
+                    pareto_assets,
+                    args.linear_x_limits,
+                )
             print(f"Replotted outputs from {manifest}")
         if not args.skip_combined_summary:
             combined_points = pd.concat([pd.read_csv(output_dir / "portfolio_efficiency_risk_points.csv") for output_dir in output_dirs], ignore_index=True)
-            write_pareto_markdown_table(combined_points, args.output_dir / "portfolio_per_bracket_pareto_table.md")
+            write_pareto_markdown_table(
+                combined_points,
+                args.output_dir / "portfolio_per_bracket_pareto_table.md",
+                args.pareto_min_incremental_efficiency_gain,
+            )
         return
     if args.resolution_months <= 0 or 18 % args.resolution_months != 0:
         raise SystemExit("--resolution-months must be a positive divisor of 18 so the plateau occurs exactly after 18 months.")
@@ -1250,6 +1531,8 @@ def main() -> None:
         raise SystemExit("--zero-risk-confidential-work-share must be between 0 and 1.")
     if args.counterfactual_skill_growth_rate_per_year < 0:
         raise SystemExit("--counterfactual-skill-growth-rate-per-year must be non-negative.")
+    if args.pareto_min_incremental_efficiency_gain < 0:
+        raise SystemExit("--pareto-min-incremental-efficiency-gain must be non-negative.")
     if args.cloud_oss_hours_per_usage_unit_period is not None and args.cloud_oss_hours_per_usage_unit_period <= 0:
         raise SystemExit("--cloud-oss-hours-per-usage-unit-period must be positive.")
     if args.it_support_max_users < 0:
@@ -1291,7 +1574,11 @@ def main() -> None:
             [pd.read_csv(args.output_dir / name / "portfolio_efficiency_risk_points.csv") for name in profiles],
             ignore_index=True,
         )
-        write_pareto_markdown_table(combined_points, args.output_dir / "portfolio_per_bracket_pareto_table.md")
+        write_pareto_markdown_table(
+            combined_points,
+            args.output_dir / "portfolio_per_bracket_pareto_table.md",
+            args.pareto_min_incremental_efficiency_gain,
+        )
 
 
 if __name__ == "__main__":

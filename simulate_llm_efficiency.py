@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 from scipy.interpolate import UnivariateSpline
 from tqdm.auto import tqdm
+import yaml
 
 
 BASE_PERSONAS = pd.DataFrame(
@@ -32,6 +33,8 @@ BASE_PERSONAS = pd.DataFrame(
             "adoption_mean": 0.93,
             "usage_intensity": 1.35,
             "wait_tolerance": 0.85,
+            "effort_expectancy_beta": 0.00,
+            "adaptability_index": 0.20,
         },
         {
             "persona": "early_adopters",
@@ -39,6 +42,8 @@ BASE_PERSONAS = pd.DataFrame(
             "adoption_mean": 0.82,
             "usage_intensity": 1.20,
             "wait_tolerance": 0.72,
+            "effort_expectancy_beta": 0.15,
+            "adaptability_index": 0.10,
         },
         {
             "persona": "early_majority",
@@ -46,6 +51,8 @@ BASE_PERSONAS = pd.DataFrame(
             "adoption_mean": 0.61,
             "usage_intensity": 1.00,
             "wait_tolerance": 0.55,
+            "effort_expectancy_beta": 0.375,
+            "adaptability_index": 0.00,
         },
         {
             "persona": "late_majority",
@@ -53,6 +60,8 @@ BASE_PERSONAS = pd.DataFrame(
             "adoption_mean": 0.38,
             "usage_intensity": 0.78,
             "wait_tolerance": 0.36,
+            "effort_expectancy_beta": 0.45,
+            "adaptability_index": -0.05,
         },
         {
             "persona": "laggards",
@@ -60,6 +69,8 @@ BASE_PERSONAS = pd.DataFrame(
             "adoption_mean": 0.17,
             "usage_intensity": 0.48,
             "wait_tolerance": 0.18,
+            "effort_expectancy_beta": 0.45,
+            "adaptability_index": -0.10,
         },
     ]
 )
@@ -115,6 +126,13 @@ ENGINEERING_CONTEXT_MULTIPLIERS = {
     "maintenance": -0.25,
 }
 
+DYNAMICS = {
+    "frontier_quarterly_growth": 1.085,
+    "frontier_capability_max": 2.60,
+    "gradual_token_cost_increase": 0.85,
+    "sudden_token_cost_multiplier": 1.85,
+}
+
 MODEL_SCENARIOS = {
     "frontier_growth": {"kind": "frontier", "growth": True, "lag_months": 0},
     "frontier_plateau": {"kind": "frontier", "growth": False, "lag_months": 0},
@@ -136,20 +154,20 @@ SERVICE_PROVIDERS = {
     "global_service": {
         "capability_lag_months": 0,
         "embargo_affected": True,
-        "confidential_capacity_share": 0.0,
+        "confidential_capacity_share": 0.1,
     },
     "european_service": {
-        "capability_lag_months": 9,
+        "capability_lag_months": 6,
+        "embargo_affected": False,
+        "confidential_capacity_share": 0.2,
+    },
+    "local_hardware": {
+        "capability_lag_months": 6,
         "embargo_affected": False,
         "confidential_capacity_share": 1.0,
     },
-    "local_hardware": {
-        "capability_lag_months": 0,
-        "embargo_affected": False,
-        "confidential_capacity_share": 0.0,
-    },
     "eu_cloud_oss": {
-        "capability_lag_months": 0,
+        "capability_lag_months": 6,
         "embargo_affected": False,
         "confidential_capacity_share": 0.5,
     },
@@ -231,7 +249,7 @@ USD_PER_HARDWARE_CAPEX_INDEX_DEFAULT = (
 )
 MONTHS_PER_YEAR = 12
 HARDWARE_AMORTIZATION_MONTHS = 36
-MAX_CONFIDENTIAL_DOCUMENT_FRACTION = 0.90
+MAX_CONFIDENTIAL_DOCUMENT_FRACTION = 0.75
 DEFAULT_COUNTERFACTUAL_SKILL_GROWTH_RATE_PER_YEAR = 0.015
 DEFAULT_CONCURRENCY = max(1, os.cpu_count() or 1)
 # TVöD Bund E 12, step 3, from May 2026; employer-cost uplift is an explicit estimate.
@@ -240,55 +258,148 @@ IT_EMPLOYER_COST_FACTOR = 1.25
 IT_SUPPORT_FTE = 0.5
 IT_SUPPORT_MONTHLY_COST_EUR = TVOD_E12_STEP3_MONTHLY_GROSS_EUR * IT_EMPLOYER_COST_FACTOR * IT_SUPPORT_FTE
 
+DEFAULT_CONFIG_PATH = Path(__file__).with_name("simulation_config.yaml")
+SIMULATION_DEFAULTS: dict[str, object] = {}
+SWEEP_DEFAULTS: dict[str, dict[str, object]] = {}
+
+
+def _required_mapping(config: dict[str, object], key: str) -> dict[str, object]:
+    value = config.get(key)
+    if not isinstance(value, dict):
+        raise ValueError(f"Configuration key '{key}' must be a mapping.")
+    return value
+
+
+def load_simulation_configuration(path: Path | str = DEFAULT_CONFIG_PATH) -> Path:
+    """Load model inputs and command defaults from a YAML configuration file."""
+    config_path = Path(path).expanduser().resolve()
+    try:
+        with config_path.open(encoding="utf-8") as handle:
+            raw = yaml.safe_load(handle)
+    except OSError as exc:
+        raise ValueError(f"Cannot read configuration file {config_path}: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ValueError("Configuration root must be a mapping.")
+
+    model = _required_mapping(raw, "model")
+    costs = _required_mapping(raw, "costs")
+    simulation = _required_mapping(raw, "simulation")
+    sweeps = _required_mapping(raw, "sweeps")
+
+    def replace_mapping(target: dict, value: object, name: str) -> None:
+        if not isinstance(value, dict):
+            raise ValueError(f"Configuration key '{name}' must be a mapping.")
+        target.clear()
+        target.update(value)
+
+    global DEFAULT_EMPLOYEE_TYPES, BASE_PERSONAS, LOCAL_FALLBACK_POLICIES
+    global SHOCK_SCENARIOS, SHOCK_COMBINATIONS, MONTHS_PER_YEAR, HARDWARE_AMORTIZATION_MONTHS
+    global MAX_CONFIDENTIAL_DOCUMENT_FRACTION, DEFAULT_COUNTERFACTUAL_SKILL_GROWTH_RATE_PER_YEAR
+    global TVOD_E12_STEP3_MONTHLY_GROSS_EUR, IT_EMPLOYER_COST_FACTOR, IT_SUPPORT_FTE, IT_SUPPORT_MONTHLY_COST_EUR
+
+    personas = model.get("personas")
+    employee_types = model.get("employee_types")
+    if not isinstance(personas, list) or not isinstance(employee_types, list):
+        raise ValueError("model.personas and model.employee_types must be lists.")
+    BASE_PERSONAS = pd.DataFrame(personas)
+    for name, default in (("effort_expectancy_beta", 0.375), ("adaptability_index", 0.0)):
+        if name not in BASE_PERSONAS:
+            BASE_PERSONAS[name] = default
+    DEFAULT_EMPLOYEE_TYPES = pd.DataFrame(employee_types)
+    for name, target in (
+        ("dynamics", DYNAMICS),
+        ("engineering_context_multipliers", ENGINEERING_CONTEXT_MULTIPLIERS),
+        ("scenarios", MODEL_SCENARIOS),
+        ("service_providers", SERVICE_PROVIDERS),
+        ("token_scenarios", TOKEN_SCENARIOS),
+        ("access_plans", ACCESS_PLANS),
+        ("hardware_scenarios", HARDWARE_SCENARIOS),
+        ("hardware_refresh", HARDWARE_REFRESH),
+        ("hardware_calibrations", HARDWARE_CALIBRATIONS),
+    ):
+        replace_mapping(target, model.get(name), f"model.{name}")
+    SHOCK_SCENARIOS = tuple(model.get("shock_scenarios", ()))
+    LOCAL_FALLBACK_POLICIES = tuple(model.get("local_fallback_policies", ()))
+    SHOCK_COMBINATIONS = ("none",) + tuple(
+        ",".join(name for index, name in enumerate(SHOCK_SCENARIOS) if mask & (1 << index))
+        for mask in range(1, 1 << len(SHOCK_SCENARIOS))
+    )
+    MONTHS_PER_YEAR = int(costs["months_per_year"])
+    HARDWARE_AMORTIZATION_MONTHS = int(costs["hardware_amortization_months"])
+    MAX_CONFIDENTIAL_DOCUMENT_FRACTION = float(costs["max_confidential_document_fraction"])
+    DEFAULT_COUNTERFACTUAL_SKILL_GROWTH_RATE_PER_YEAR = float(costs["counterfactual_skill_growth_rate_per_year"])
+    TVOD_E12_STEP3_MONTHLY_GROSS_EUR = float(costs["tvod_e12_step3_monthly_gross_eur"])
+    IT_EMPLOYER_COST_FACTOR = float(costs["it_employer_cost_factor"])
+    IT_SUPPORT_FTE = float(costs["it_support_fte"])
+    IT_SUPPORT_MONTHLY_COST_EUR = TVOD_E12_STEP3_MONTHLY_GROSS_EUR * IT_EMPLOYER_COST_FACTOR * IT_SUPPORT_FTE
+    SIMULATION_DEFAULTS.clear()
+    SIMULATION_DEFAULTS.update(simulation)
+    SWEEP_DEFAULTS.clear()
+    SWEEP_DEFAULTS.update(sweeps)
+    return config_path
+
+
+def configuration_path_from_argv() -> Path:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    return parser.parse_known_args()[0].config
+
+
+load_simulation_configuration()
+
 _NUMBA_MODULE = None
 _NUMBA_IMPORT_ATTEMPTED = False
 
 
 @dataclass(frozen=True)
 class SimulationConfig:
-    users: int = 500
-    years: float = 3.0
-    resolution_months: int = 3
-    runs: int = 1000
+    users: int = int(SIMULATION_DEFAULTS["users"])
+    years: float = float(SIMULATION_DEFAULTS["years"])
+    resolution_months: int = int(SIMULATION_DEFAULTS["resolution_months"])
+    runs: int = int(SIMULATION_DEFAULTS["runs"])
     concurrency: int = DEFAULT_CONCURRENCY
-    seed: int = 20260703
-    plateau_quarter: int = 5
-    base_cost_index_per_active_user_quarter: float = 1.0
+    seed: int = int(SIMULATION_DEFAULTS["seed"])
+    plateau_quarter: int = int(SIMULATION_DEFAULTS["plateau_quarter"])
+    base_cost_index_per_active_user_quarter: float = float(SIMULATION_DEFAULTS["base_cost_index_per_active_user_quarter"])
     max_monthly_service_budget: float | None = None
     max_upfront_hardware_budget: float | None = None
     max_monthly_service_budget_usd: float | None = None
     max_upfront_hardware_budget_usd: float | None = None
-    confidential_document_fraction: float = 0.0
-    zero_risk_confidential_work_share: float = 0.20
+    confidential_document_fraction: float = float(SIMULATION_DEFAULTS["confidential_document_fraction"])
+    zero_risk_confidential_work_share: float = float(SIMULATION_DEFAULTS["zero_risk_confidential_work_share"])
     counterfactual_skill_growth_enabled: bool = True
     counterfactual_skill_growth_rate_per_year: float = DEFAULT_COUNTERFACTUAL_SKILL_GROWTH_RATE_PER_YEAR
-    usd_per_service_cost_index_quarter: float = 60.0
+    usd_per_service_cost_index_quarter: float = float(SIMULATION_DEFAULTS["usd_per_service_cost_index_quarter"])
     usd_per_hardware_capex_index: float = USD_PER_HARDWARE_CAPEX_INDEX_DEFAULT
-    hardware_calibration: str = "h100-gemma4-31b"
+    hardware_calibration: str = str(SIMULATION_DEFAULTS["hardware_calibration"])
     onprem_capability_multiplier: float = 1.0
     employee_mix: dict[str, float] | None = None
-    engineering_context: str = "mixed"
-    adoption_propensity_concentration: float = 24.0
-    adoption_capability_elasticity: float = 0.16
-    improvement_base_probability: float = 0.42
-    improvement_capability_weight: float = 0.20
-    improvement_probability_min: float = 0.05
-    improvement_probability_max: float = 0.92
-    ai_gain_min: float = -0.25
-    ai_gain_max: float = 2.0
-    zero_risk_feature_gain: float = 0.005
-    embargo_shock_probability: float = 0.05
-    embargo_rollback_months: int = 6
+    engineering_context: str = str(SIMULATION_DEFAULTS["engineering_context"])
+    adoption_propensity_concentration: float = float(SIMULATION_DEFAULTS["adoption_propensity_concentration"])
+    adoption_capability_elasticity: float = float(SIMULATION_DEFAULTS["adoption_capability_elasticity"])
+    effort_expectancy_friction: float = float(SIMULATION_DEFAULTS.get("effort_expectancy_friction", 0.20))
+    adaptability_productivity_beta: float = float(SIMULATION_DEFAULTS.get("adaptability_productivity_beta", 0.599))
+    early_majority_effort_expectancy_beta: float = float(SIMULATION_DEFAULTS.get("early_majority_effort_expectancy_beta", 0.375))
+    early_majority_adaptability_index: float = float(SIMULATION_DEFAULTS.get("early_majority_adaptability_index", 0.0))
+    improvement_base_probability: float = float(SIMULATION_DEFAULTS["improvement_base_probability"])
+    improvement_capability_weight: float = float(SIMULATION_DEFAULTS["improvement_capability_weight"])
+    improvement_probability_min: float = float(SIMULATION_DEFAULTS["improvement_probability_min"])
+    improvement_probability_max: float = float(SIMULATION_DEFAULTS["improvement_probability_max"])
+    ai_gain_min: float = float(SIMULATION_DEFAULTS["ai_gain_min"])
+    ai_gain_max: float = float(SIMULATION_DEFAULTS["ai_gain_max"])
+    zero_risk_feature_gain: float = float(SIMULATION_DEFAULTS["zero_risk_feature_gain"])
+    embargo_shock_probability: float = float(SIMULATION_DEFAULTS["embargo_shock_probability"])
+    embargo_rollback_months: int = int(SIMULATION_DEFAULTS["embargo_rollback_months"])
     stochastic_shocks: bool = False
     shock_combination: str = "none"
-    sudden_break_even_probability_per_month: float = 0.01
-    gradual_break_even_probability_per_month: float = 0.01
-    capability_plateau_probability_per_month: float = 0.01
-    confidential_mixing_ratio: float = 0.5
-    confidential_mixing_penalty: float = 0.5
+    sudden_break_even_probability_per_month: float = float(SIMULATION_DEFAULTS["sudden_break_even_probability_per_month"])
+    gradual_break_even_probability_per_month: float = float(SIMULATION_DEFAULTS["gradual_break_even_probability_per_month"])
+    capability_plateau_probability_per_month: float = float(SIMULATION_DEFAULTS["capability_plateau_probability_per_month"])
+    confidential_mixing_ratio: float = float(SIMULATION_DEFAULTS["confidential_mixing_ratio"])
+    confidential_mixing_penalty: float = float(SIMULATION_DEFAULTS["confidential_mixing_penalty"])
     cloud_oss_hours_per_usage_unit_period: float | None = None
     it_support_enabled: bool = True
-    it_support_max_users: int = 50
+    it_support_max_users: int = int(SIMULATION_DEFAULTS["it_support_max_users"])
     it_support_monthly_cost_eur: float = IT_SUPPORT_MONTHLY_COST_EUR
     backend: str = "numpy"
     show_progress: bool = True
@@ -426,6 +537,8 @@ def _sample_users(rng: np.random.Generator, users: int, config: SimulationConfig
             "adoption_mean": BASE_PERSONAS.iloc[persona_idx]["adoption_mean"].to_numpy(float),
             "usage_intensity": BASE_PERSONAS.iloc[persona_idx]["usage_intensity"].to_numpy(float),
             "wait_tolerance": BASE_PERSONAS.iloc[persona_idx]["wait_tolerance"].to_numpy(float),
+            "effort_expectancy_beta": BASE_PERSONAS.iloc[persona_idx]["effort_expectancy_beta"].to_numpy(float),
+            "adaptability_index": BASE_PERSONAS.iloc[persona_idx]["adaptability_index"].to_numpy(float),
             "task": tasks.iloc[task_idx]["task"].to_numpy(),
             "capability_fit": tasks.iloc[task_idx]["capability_fit"].to_numpy(float),
             "mean_gain": tasks.iloc[task_idx]["mean_gain"].to_numpy(float),
@@ -436,16 +549,22 @@ def _sample_users(rng: np.random.Generator, users: int, config: SimulationConfig
     concentration = config.adoption_propensity_concentration
     means = users_df["adoption_mean"].to_numpy(float)
     users_df["adoption_propensity"] = rng.beta(means * concentration, (1.0 - means) * concentration)
+    users_df["gain_moderation"] = (
+        (1.0 - users_df["effort_expectancy_beta"] * config.effort_expectancy_friction)
+        / (1.0 - config.early_majority_effort_expectancy_beta * config.effort_expectancy_friction)
+        * (1.0 + config.adaptability_productivity_beta * (users_df["adaptability_index"] - config.early_majority_adaptability_index))
+    )
     return users_df
 
 
-def _user_vectors(users_df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def _user_vectors(users_df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     return (
         users_df["adoption_propensity"].to_numpy(float, copy=True),
         users_df["adoption_mean"].to_numpy(float, copy=True),
         users_df["capability_fit"].to_numpy(float, copy=True),
         users_df["usage_intensity"].to_numpy(float, copy=True),
         users_df["wait_tolerance"].to_numpy(float, copy=True),
+        users_df["gain_moderation"].to_numpy(float, copy=True),
         users_df["mean_gain"].to_numpy(float, copy=True),
         users_df["sigma"].to_numpy(float, copy=True),
     )
@@ -467,9 +586,9 @@ def _capability_multiplier(
     if not model["growth"] or force_plateau:
         effective_period = min(effective_period, plateau_quarter)
 
-    quarterly_growth = 1.085
+    quarterly_growth = float(DYNAMICS["frontier_quarterly_growth"])
     multiplier = quarterly_growth**effective_period
-    return min(multiplier, 2.60)
+    return min(multiplier, float(DYNAMICS["frontier_capability_max"]))
 
 
 def _service_capability_multiplier(
@@ -500,9 +619,9 @@ def _token_cost_multiplier(period: int, token_scenario: str, periods: int) -> fl
     if token_scenario == "flat":
         return 1.0
     if token_scenario == "gradual":
-        return 1.0 + 0.85 * period / max(1, periods - 1)
+        return 1.0 + float(DYNAMICS["gradual_token_cost_increase"]) * period / max(1, periods - 1)
     if token_scenario == "sudden":
-        return 1.0 if period < max(1, periods // 3) else 1.85
+        return 1.0 if period < max(1, periods // 3) else float(DYNAMICS["sudden_token_cost_multiplier"])
     raise ValueError(f"Unknown token scenario: {token_scenario}")
 
 
@@ -521,10 +640,10 @@ def _stochastic_token_cost(
     gradual_start_period: int | None,
 ) -> float:
     if sudden_active:
-        return 1.85
+        return float(DYNAMICS["sudden_token_cost_multiplier"])
     if gradual_start_period is None:
         return 1.0
-    return 1.0 + 0.85 * (period - gradual_start_period) / max(1, periods - 1 - gradual_start_period)
+    return 1.0 + float(DYNAMICS["gradual_token_cost_increase"]) * (period - gradual_start_period) / max(1, periods - 1 - gradual_start_period)
 
 
 def _it_support_cost_index(hardware_name: str, config: SimulationConfig) -> float:
@@ -795,8 +914,7 @@ def _simulate_one_scenario(args: tuple) -> pd.DataFrame:
 
     for run in range(config.runs):
         users_df = _sample_users(rng, config.users, config)
-        previous_return = None
-        return_changes: list[float] = []
+        return_rates: list[float] = []
         sudden_active = False
         gradual_start_period: int | None = None
         shock_plateau_quarter: float | None = None
@@ -804,9 +922,12 @@ def _simulate_one_scenario(args: tuple) -> pd.DataFrame:
         for period in range(config.periods):
             gain_discount = _counterfactual_gain_discount(period, config)
             zero_risk_access_multiplier = _zero_risk_gain_access_multiplier(config)
+            # Draw for every asset so paired runs retain the same random-stream
+            # alignment even when only global service is embargo-exposed.
+            embargo_draw = rng.random()
             embargo_shock = bool(
                 service_provider_name == "global_service"
-                and rng.random() < config.embargo_shock_probability
+                and embargo_draw < config.embargo_shock_probability
             )
             if sudden_enabled and not sudden_active and rng.random() < _period_probability(config.sudden_break_even_probability_per_month, config.resolution_months):
                 sudden_active = True
@@ -890,7 +1011,7 @@ def _simulate_one_scenario(args: tuple) -> pd.DataFrame:
                 users_df["sigma"].to_numpy(float) * gain_scale,
             )
             ai_realized_gain = np.clip(
-                sampled_gains,
+                sampled_gains * users_df["gain_moderation"].to_numpy(float),
                 config.ai_gain_min * gain_scale,
                 config.ai_gain_max * gain_scale,
             ) * active * improved * delivered_usage_multiplier * confidential_penalty * gain_discount
@@ -910,10 +1031,9 @@ def _simulate_one_scenario(args: tuple) -> pd.DataFrame:
             return_rate = mean_gain / (total_cost / config.users) if total_cost > 1e-9 else np.nan
             annualized_return_rate = return_rate * config.annualization_factor
 
-            if previous_return is not None and np.isfinite(return_rate) and np.isfinite(previous_return):
-                return_changes.append(return_rate - previous_return)
-            previous_return = return_rate
-            risk = float(np.std(return_changes, ddof=1)) if len(return_changes) > 1 else 0.0
+            if np.isfinite(return_rate):
+                return_rates.append(return_rate)
+            risk = float(np.std(return_rates, ddof=1)) if len(return_rates) > 1 else 0.0
 
             run_rows.append(
                 {
@@ -1019,6 +1139,7 @@ def _numba_simulator():
         capability_fit: np.ndarray,
         usage_intensity: np.ndarray,
         wait_tolerance: np.ndarray,
+        gain_moderation: np.ndarray,
         mean_gain_base: np.ndarray,
         sigma: np.ndarray,
         frontier_quality_work_share: np.ndarray,
@@ -1077,10 +1198,9 @@ def _numba_simulator():
     ) -> np.ndarray:
         periods, users = adoption_draws.shape
         metrics = np.empty((periods, 23), dtype=np.float64)
-        previous_return = np.nan
-        change_count = 0
-        change_mean = 0.0
-        change_m2 = 0.0
+        return_count = 0
+        return_mean = 0.0
+        return_m2 = 0.0
         sudden_active = 0
         gradual_start_period = -1
         shock_plateau_quarter = -1.0
@@ -1276,6 +1396,7 @@ def _numba_simulator():
                     * hardware_bonus
                     * capability_fit[user]
                 )
+                sampled_gain *= gain_moderation[user]
                 scaled_ai_gain_min = ai_gain_min * resolution_months / 12.0
                 scaled_ai_gain_max = ai_gain_max * resolution_months / 12.0
                 if sampled_gain < scaled_ai_gain_min:
@@ -1300,15 +1421,13 @@ def _numba_simulator():
             return_rate = mean_gain / (total_cost / users) if total_cost > 1e-9 else np.nan
 
             risk = 0.0
-            if not np.isnan(return_rate) and not np.isnan(previous_return):
-                change = return_rate - previous_return
-                change_count += 1
-                delta = change - change_mean
-                change_mean += delta / change_count
-                change_m2 += delta * (change - change_mean)
-                if change_count > 1:
-                    risk = (change_m2 / (change_count - 1)) ** 0.5
-            previous_return = return_rate
+            if not np.isnan(return_rate):
+                return_count += 1
+                delta = return_rate - return_mean
+                return_mean += delta / return_count
+                return_m2 += delta * (return_rate - return_mean)
+                if return_count > 1:
+                    risk = (return_m2 / (return_count - 1)) ** 0.5
 
             metrics[period, 0] = period
             metrics[period, 1] = period * resolution_months
@@ -1402,7 +1521,7 @@ def _simulate_one_scenario_numba(args: tuple) -> pd.DataFrame:
 
     for run in range(config.runs):
         users_df = _sample_users(rng, users, config)
-        adoption_propensity, adoption_mean, capability_fit, usage_intensity, wait_tolerance, mean_gain_base, sigma = _user_vectors(users_df)
+        adoption_propensity, adoption_mean, capability_fit, usage_intensity, wait_tolerance, gain_moderation, mean_gain_base, sigma = _user_vectors(users_df)
         frontier_quality_work_share = users_df["frontier_quality_work_share"].to_numpy(float, copy=True)
         (
             wait_multiplier,
@@ -1427,6 +1546,7 @@ def _simulate_one_scenario_numba(args: tuple) -> pd.DataFrame:
             capability_fit,
             usage_intensity,
             wait_tolerance,
+            gain_moderation,
             mean_gain_base,
             sigma,
             frontier_quality_work_share,
@@ -1520,12 +1640,10 @@ def _simulate_one_scenario_numba(args: tuple) -> pd.DataFrame:
 
         run_returns = data["return_rate"][row_slice]
         run_risk = np.zeros(periods, dtype=np.float64)
-        if periods > 2:
-            deltas = np.diff(run_returns)
-            for idx in range(2, periods):
-                finite_deltas = deltas[:idx][np.isfinite(deltas[:idx])]
-                if len(finite_deltas) > 1:
-                    run_risk[idx] = float(np.std(finite_deltas, ddof=1))
+        for idx in range(periods):
+            finite_returns = run_returns[: idx + 1][np.isfinite(run_returns[: idx + 1])]
+            if len(finite_returns) > 1:
+                run_risk[idx] = float(np.std(finite_returns, ddof=1))
         data["risk"][row_slice] = run_risk
         data["annualized_risk"][row_slice] = run_risk * config.annualization_factor
 
@@ -1559,12 +1677,12 @@ def _simulate_one_scenario_torch_mps(args: tuple) -> pd.DataFrame:
         capability_fit = torch.as_tensor(users_df["capability_fit"].to_numpy(float, copy=True), dtype=torch.float32, device=device)
         usage_intensity = torch.as_tensor(users_df["usage_intensity"].to_numpy(float, copy=True), dtype=torch.float32, device=device)
         wait_tolerance = torch.as_tensor(users_df["wait_tolerance"].to_numpy(float, copy=True), dtype=torch.float32, device=device)
+        gain_moderation = torch.as_tensor(users_df["gain_moderation"].to_numpy(float, copy=True), dtype=torch.float32, device=device)
         mean_gain_base = torch.as_tensor(users_df["mean_gain"].to_numpy(float, copy=True), dtype=torch.float32, device=device)
         sigma = torch.as_tensor(users_df["sigma"].to_numpy(float, copy=True), dtype=torch.float32, device=device)
         wait_multiplier = torch.as_tensor(wait_multiplier_np, dtype=torch.float32, device=device)
 
-        previous_return = None
-        return_changes: list[float] = []
+        return_rates: list[float] = []
         sudden_active = False
         gradual_start_period: int | None = None
         shock_plateau_quarter: float | None = None
@@ -1662,7 +1780,7 @@ def _simulate_one_scenario_torch_mps(args: tuple) -> pd.DataFrame:
             )
             ai_realized_gain = (
                 torch.clamp(
-                    sampled_gains,
+                    sampled_gains * gain_moderation,
                     config.ai_gain_min * gain_scale,
                     config.ai_gain_max * gain_scale,
                 )
@@ -1700,10 +1818,9 @@ def _simulate_one_scenario_torch_mps(args: tuple) -> pd.DataFrame:
             return_rate = mean_gain / (total_cost / config.users) if total_cost > 1e-9 else np.nan
             annualized_return_rate = return_rate * config.annualization_factor
 
-            if previous_return is not None and np.isfinite(return_rate) and np.isfinite(previous_return):
-                return_changes.append(return_rate - previous_return)
-            previous_return = return_rate
-            risk = float(np.std(return_changes, ddof=1)) if len(return_changes) > 1 else 0.0
+            if np.isfinite(return_rate):
+                return_rates.append(return_rate)
+            risk = float(np.std(return_rates, ddof=1)) if len(return_rates) > 1 else 0.0
 
             run_rows.append(
                 {
@@ -2206,14 +2323,20 @@ def plot_outputs(summary: pd.DataFrame, fits: pd.DataFrame, output_dir: Path) ->
 
 
 def parse_args() -> argparse.Namespace:
+    config_path = configuration_path_from_argv()
+    try:
+        load_simulation_configuration(config_path)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--users", type=int, default=500)
-    parser.add_argument("--years", type=float, default=3.0)
-    parser.add_argument("--resolution-months", type=int, default=3)
-    parser.add_argument("--runs", type=int, default=1000)
+    parser.add_argument("--config", type=Path, default=config_path, help="YAML configuration file (default: simulation_config.yaml).")
+    parser.add_argument("--users", type=int, default=SIMULATION_DEFAULTS["users"])
+    parser.add_argument("--years", type=float, default=SIMULATION_DEFAULTS["years"])
+    parser.add_argument("--resolution-months", type=int, default=SIMULATION_DEFAULTS["resolution_months"])
+    parser.add_argument("--runs", type=int, default=SIMULATION_DEFAULTS["runs"])
     parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY)
-    parser.add_argument("--seed", type=int, default=20260703)
-    parser.add_argument("--plateau-quarter", type=int, default=5)
+    parser.add_argument("--seed", type=int, default=SIMULATION_DEFAULTS["seed"])
+    parser.add_argument("--plateau-quarter", type=int, default=SIMULATION_DEFAULTS["plateau_quarter"])
     parser.add_argument(
         "--employee-mix",
         type=str,
@@ -2223,62 +2346,62 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--engineering-context",
         choices=sorted(ENGINEERING_CONTEXT_MULTIPLIERS),
-        default="mixed",
+        default=SIMULATION_DEFAULTS["engineering_context"],
         help="Software-engineering task context: mixed baseline, bounded enterprise tasks, or mature-codebase maintenance.",
     )
     parser.add_argument(
         "--adoption-propensity-concentration",
         type=float,
-        default=24.0,
+        default=SIMULATION_DEFAULTS["adoption_propensity_concentration"],
         help="Beta-distribution concentration around each adopter group's adoption prior; lower values mean more person-to-person variation.",
     )
     parser.add_argument(
         "--adoption-capability-elasticity",
         type=float,
-        default=0.16,
+        default=SIMULATION_DEFAULTS["adoption_capability_elasticity"],
         help="Sensitivity of AI-use probability to capability above its baseline (a calibration scenario parameter).",
     )
     parser.add_argument(
         "--improvement-base-probability",
         type=float,
-        default=0.42,
+        default=SIMULATION_DEFAULTS["improvement_base_probability"],
         help="Baseline chance that delivered AI use improves a task (a calibration scenario parameter).",
     )
     parser.add_argument(
         "--improvement-capability-weight",
         type=float,
-        default=0.20,
+        default=SIMULATION_DEFAULTS["improvement_capability_weight"],
         help="Additional improvement probability from model capability times work-type capability fit.",
     )
-    parser.add_argument("--improvement-probability-min", type=float, default=0.05)
-    parser.add_argument("--improvement-probability-max", type=float, default=0.92)
-    parser.add_argument("--ai-gain-min", type=float, default=-0.25)
-    parser.add_argument("--ai-gain-max", type=float, default=2.0)
-    parser.add_argument("--embargo-shock-probability", type=float, default=0.05)
-    parser.add_argument("--embargo-rollback-months", type=int, default=6)
+    parser.add_argument("--improvement-probability-min", type=float, default=SIMULATION_DEFAULTS["improvement_probability_min"])
+    parser.add_argument("--improvement-probability-max", type=float, default=SIMULATION_DEFAULTS["improvement_probability_max"])
+    parser.add_argument("--ai-gain-min", type=float, default=SIMULATION_DEFAULTS["ai_gain_min"])
+    parser.add_argument("--ai-gain-max", type=float, default=SIMULATION_DEFAULTS["ai_gain_max"])
+    parser.add_argument("--embargo-shock-probability", type=float, default=SIMULATION_DEFAULTS["embargo_shock_probability"])
+    parser.add_argument("--embargo-rollback-months", type=int, default=SIMULATION_DEFAULTS["embargo_rollback_months"])
     parser.add_argument(
         "--stochastic-shocks",
         action="store_true",
         help="Replace deterministic token-cost and plateau scenarios with persistent stochastic shock combinations.",
     )
-    parser.add_argument("--sudden-break-even-probability-per-month", type=float, default=0.01)
-    parser.add_argument("--gradual-break-even-probability-per-month", type=float, default=0.01)
-    parser.add_argument("--capability-plateau-probability-per-month", type=float, default=0.01)
-    parser.add_argument("--confidential-mixing-ratio", type=float, default=0.5)
-    parser.add_argument("--confidential-mixing-penalty", type=float, default=0.5)
+    parser.add_argument("--sudden-break-even-probability-per-month", type=float, default=SIMULATION_DEFAULTS["sudden_break_even_probability_per_month"])
+    parser.add_argument("--gradual-break-even-probability-per-month", type=float, default=SIMULATION_DEFAULTS["gradual_break_even_probability_per_month"])
+    parser.add_argument("--capability-plateau-probability-per-month", type=float, default=SIMULATION_DEFAULTS["capability_plateau_probability_per_month"])
+    parser.add_argument("--confidential-mixing-ratio", type=float, default=SIMULATION_DEFAULTS["confidential_mixing_ratio"])
+    parser.add_argument("--confidential-mixing-penalty", type=float, default=SIMULATION_DEFAULTS["confidential_mixing_penalty"])
     parser.add_argument("--cloud-oss-hours-per-usage-unit-period", type=float, default=None)
     parser.add_argument("--disable-it-support", action="store_true", help="Disable the default 0.5-FTE IT-support cost for small on-premise and OSS-cloud companies.")
-    parser.add_argument("--it-support-max-users", type=int, default=50, help="Apply the IT-support cost at or below this employee count.")
+    parser.add_argument("--it-support-max-users", type=int, default=SIMULATION_DEFAULTS["it_support_max_users"], help="Apply the IT-support cost at or below this employee count.")
     parser.add_argument(
         "--zero-risk-feature-gain",
         type=float,
-        default=0.01,
+        default=SIMULATION_DEFAULTS["zero_risk_feature_gain"],
         help="Deterministic per-employee efficiency gain from no-cost integrated AI features, scaled by the persona adoption-prior mean.",
     )
     parser.add_argument(
         "--zero-risk-confidential-work-share",
         type=float,
-        default=0.20,
+        default=SIMULATION_DEFAULTS["zero_risk_confidential_work_share"],
         help="Share of confidential work eligible for zero-risk integrated-AI gains.",
     )
     parser.add_argument(
@@ -2299,13 +2422,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--confidential-document-fraction",
         type=float,
-        default=0.0,
+        default=SIMULATION_DEFAULTS["confidential_document_fraction"],
         help="Fraction of organization documents/workflows that must stay on-prem and cannot be served by cloud-only scenarios.",
     )
     parser.add_argument(
         "--usd-per-service-cost-index-quarter",
         type=float,
-        default=60.0,
+        default=SIMULATION_DEFAULTS["usd_per_service_cost_index_quarter"],
         help="Dollar calibration for one service cost-index unit per active user per quarter.",
     )
     parser.add_argument(
@@ -2317,7 +2440,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--hardware-calibration",
         choices=sorted(HARDWARE_CALIBRATIONS),
-        default="h100-gemma4-31b",
+        default=SIMULATION_DEFAULTS["hardware_calibration"],
         help="Hardware/model calibration profile for local on-prem runs.",
     )
     parser.add_argument(
