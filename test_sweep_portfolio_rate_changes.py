@@ -15,11 +15,15 @@ from sweep_portfolio_rate_changes import (
     company_profile_index,
     friendly_label,
     hardware_for_budget,
+    hardware_budget_sensitivity_records,
+    hardware_budget_time_sensitivity_records,
     hardware_selection_for_budget,
     paired_future_return_rates,
+    period_frontier_return_rates,
     select_portfolios,
     _apply_frontier_x_limits,
     write_pareto_markdown_table,
+    write_period_frontier_return_rates,
     write_wide_csvs,
 )
 
@@ -271,3 +275,125 @@ def test_paired_future_paths_keep_each_run_aligned_across_selected_assets():
     assert paths.shape[0] == 4
     assert paths.loc[(paths["future_id"] == 1) & (paths["month"] == 3), "optimum"].item() == 2.4
     assert manifest["portfolio"].tolist() == ["low_risk", "optimum"]
+
+
+def test_period_frontier_return_rates_keep_three_full_horizon_series_per_period(tmp_path):
+    identities = {
+        "model": ["model_a", "model_b", "model_c"] * 2,
+        "token_cost": ["flat"] * 6,
+        "access_plan": ["pay_per_use"] * 6,
+        "hardware": ["cloud_api_only", "cloud_api_only", "onprem_full_capacity"] * 2,
+        "hardware_refresh": ["maxed_out"] * 6,
+        "local_fallback": ["persona_choice"] * 6,
+        "service_provider": ["global_service", "european_service", "local_hardware"] * 2,
+        "shock_combination": ["none"] * 6,
+    }
+    summary = pd.DataFrame(
+        {
+            **identities,
+            "period": [0, 0, 0, 1, 1, 1],
+            "month": [0, 0, 0, 3, 3, 3],
+            "annualized_return_rate_risk_stddev": [0.1, 0.2, 0.4] * 2,
+            "median_annualized_return_rate": [0.2, 0.5, 0.7, 0.3, 0.4, 1.2],
+        }
+    )
+    rates = period_frontier_return_rates(summary)
+    assert rates.columns.tolist() == [
+        "period", "month",
+        "period_0_low_risk", "period_0_medium_risk", "period_0_high_risk",
+        "period_1_low_risk", "period_1_medium_risk", "period_1_high_risk",
+    ]
+    assert rates.shape == (2, 8)
+    assert rates.loc[rates["period"] == 1, "period_0_medium_risk"].item() == 0.4
+    assert rates.loc[rates["period"] == 0, "period_1_high_risk"].item() == 0.7
+
+    scenario = SweepScenario(50, 10.0, 50_000.0, 0.25, False)
+    outputs = write_period_frontier_return_rates(summary, scenario, tmp_path)
+    output = (
+        tmp_path / "period_frontier_return_rates" / "users_50" / "max_hardware_invest_usd_50000"
+        / "confidential_document_fraction_0p25" / "access_plan_pay_per_use"
+        / "users_50_max_hardware_invest_usd_50000_confidential_document_fraction_0p25_service_usd_10_plateau_false_access_plan_pay_per_use.csv"
+    )
+    assert outputs == [output]
+    assert pd.read_csv(output).equals(rates)
+
+
+def test_period_frontier_return_rates_fan_out_by_access_plan(tmp_path):
+    summary = pd.DataFrame(
+        {
+            "model": ["model_a", "model_b"] * 3,
+            "token_cost": ["flat"] * 6,
+            "access_plan": ["pay_per_use"] * 2 + ["flatrate_limited"] * 2 + ["flatrate_limited_topup"] * 2,
+            "hardware": ["cloud_api_only"] * 6,
+            "hardware_refresh": ["maxed_out"] * 6,
+            "local_fallback": ["persona_choice"] * 6,
+            "service_provider": ["global_service"] * 6,
+            "shock_combination": ["none"] * 6,
+            "period": [0, 0] * 3,
+            "month": [0, 0] * 3,
+            "annualized_return_rate_risk_stddev": [0.1, 0.2] * 3,
+            "median_annualized_return_rate": [0.2, 0.5] * 3,
+        }
+    )
+    outputs = write_period_frontier_return_rates(
+        summary, SweepScenario(50, 10.0, 50_000.0, 0.25, False), tmp_path
+    )
+
+    assert [path.parent.name for path in outputs] == [
+        "access_plan_flatrate_limited",
+        "access_plan_flatrate_limited_topup",
+        "access_plan_pay_per_use",
+    ]
+    assert all("access_plan_" in path.name for path in outputs)
+    assert all(pd.read_csv(path).shape == (1, 5) for path in outputs)
+
+
+def test_hardware_budget_sensitivity_records_keep_final_period_risk_bands():
+    summary = pd.DataFrame(
+        {
+            "model": ["model_a", "model_b", "model_c"] * 2,
+            "token_cost": ["flat"] * 6,
+            "access_plan": ["pay_per_use"] * 6,
+            "hardware": ["cloud_api_only", "cloud_api_only", "onprem_full_capacity"] * 2,
+            "hardware_refresh": ["maxed_out"] * 6,
+            "local_fallback": ["persona_choice"] * 6,
+            "service_provider": ["global_service", "european_service", "local_hardware"] * 2,
+            "shock_combination": ["none"] * 6,
+            "period": [0, 0, 0, 1, 1, 1],
+            "month": [0, 0, 0, 3, 3, 3],
+            "annualized_return_rate_risk_stddev": [0.1, 0.2, 0.4] * 2,
+            "median_annualized_return_rate": [0.2, 0.5, 0.7, 0.3, 0.4, 1.2],
+        }
+    )
+    records = hardware_budget_sensitivity_records(
+        summary, SweepScenario(50, 10.0, 50_000.0, 0.25, False), "mixed"
+    )
+    assert records["portfolio"].tolist() == ["low_risk", "medium_risk", "high_risk"]
+    assert records["selection_period"].eq(1).all()
+    assert records["hardware_budget_usd"].eq(50_000.0).all()
+    assert records["company_profile"].eq("mixed").all()
+
+
+def test_hardware_budget_time_sensitivity_records_keep_every_period():
+    summary = pd.DataFrame(
+        {
+            "model": ["model_a", "model_a"],
+            "token_cost": ["flat", "flat"],
+            "access_plan": ["pay_per_use", "pay_per_use"],
+            "hardware": ["onprem_full_capacity", "onprem_full_capacity"],
+            "hardware_refresh": ["maxed_out", "maxed_out"],
+            "local_fallback": ["persona_choice", "persona_choice"],
+            "service_provider": ["local_hardware", "local_hardware"],
+            "shock_combination": ["none", "none"],
+            "period": [0, 1],
+            "month": [0, 3],
+            "annualized_return_rate_risk_stddev": [0.1, 0.2],
+            "median_annualized_return_rate": [0.2, 0.4],
+        }
+    )
+    records = hardware_budget_time_sensitivity_records(
+        summary, SweepScenario(50, 10.0, 50_000.0, 0.25, False), "mixed"
+    )
+    assert set(records["selection_period"]) == {0, 1}
+    assert set(records["month"]) == {0, 3}
+    assert records.groupby("selection_period")["portfolio"].nunique().eq(3).all()

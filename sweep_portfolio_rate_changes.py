@@ -47,6 +47,7 @@ SERVICE_BUDGETS_USD = (5.0, 10.0, 25.0, 50.0)
 HARDWARE_BUDGETS_USD = (0.0, 10_000.0, 50_000.0, 100_000.0, 500_000.0, 1_000_000.0)
 CONFIDENTIAL_SHARES = (0.0, 0.1, 0.25, 0.5, 0.9)
 PORTFOLIOS = ("low_risk", "optimum", "high_gain")
+PERIOD_FRONTIER_PORTFOLIOS = ("low_risk", "medium_risk", "high_risk")
 SERVICE_SLEEVES = {
     "global_service": "global_cloud",
     "european_service": "eu_cloud",
@@ -415,6 +416,336 @@ def write_wide_csvs(selected: pd.DataFrame, output_dir: Path) -> None:
         wide = selected.pivot(index="month", columns="column_label", values=metric).reset_index()
         wide = wide.reindex(columns=["month", *sorted(selected["column_label"].unique())])
         wide.to_csv(output_dir / filename, index=False)
+
+
+def _best_return_per_risk(points: pd.DataFrame, risk_column: str, reward_column: str) -> pd.Series:
+    positive_risk = points[points[risk_column] > 0.0]
+    if positive_risk.empty:
+        return points.sort_values([reward_column, risk_column], ascending=[False, True]).iloc[0]
+    ratios = positive_risk[reward_column] / positive_risk[risk_column]
+    return positive_risk.loc[ratios.idxmax()]
+
+
+def period_frontier_selections(
+    summary: pd.DataFrame, access_plan: str | None = None
+) -> pd.DataFrame:
+    """Select three risk-band frontier assets independently at every period."""
+    risk_column = "annualized_return_rate_risk_stddev"
+    reward_column = "median_annualized_return_rate"
+    selections = []
+    if access_plan is not None:
+        summary = summary[summary["access_plan"] == access_plan]
+    for period, period_points in summary.groupby("period", sort=True):
+        frontier = efficient_frontier(period_points, risk_column, reward_column)
+        if frontier.empty:
+            continue
+        median_risk = frontier[risk_column].median()
+        risk_stddev = frontier[risk_column].std(ddof=0)
+        lower, upper = median_risk - risk_stddev, median_risk + risk_stddev
+        bands = {
+            "low_risk": frontier[frontier[risk_column] <= lower],
+            "medium_risk": frontier[(frontier[risk_column] > lower) & (frontier[risk_column] <= upper)],
+            "high_risk": frontier[frontier[risk_column] > upper],
+        }
+        fallbacks = {
+            "low_risk": frontier.sort_values(risk_column).head(1),
+            "medium_risk": frontier.assign(_distance=(frontier[risk_column] - median_risk).abs()).sort_values(["_distance", risk_column]).head(1),
+            "high_risk": frontier.sort_values(risk_column, ascending=False).head(1),
+        }
+        for portfolio in PERIOD_FRONTIER_PORTFOLIOS:
+            candidates = bands[portfolio]
+            selected = _best_return_per_risk(
+                candidates if not candidates.empty else fallbacks[portfolio], risk_column, reward_column
+            )
+            selections.append(
+                {
+                    "selection_period": period,
+                    "portfolio": portfolio,
+                    **selected.to_dict(),
+                }
+            )
+    return pd.DataFrame(selections)
+
+
+def period_frontier_return_rates(
+    summary: pd.DataFrame, access_plan: str | None = None
+) -> pd.DataFrame:
+    """Return full histories for three risk-band frontier selections at every period."""
+    reward_column = "median_annualized_return_rate"
+    selected = period_frontier_selections(summary, access_plan)
+    if selected.empty:
+        return pd.DataFrame()
+    selection_columns = ["selection_period", "portfolio", *ASSET_IDENTITY_COLUMNS]
+    histories = summary.merge(selected[selection_columns], on=ASSET_IDENTITY_COLUMNS, how="inner")
+    histories["column_label"] = histories.apply(
+        lambda row: f"period_{int(row['selection_period'])}_{row['portfolio']}", axis=1
+    )
+    wide = histories.pivot(
+        index=["period", "month"], columns="column_label", values=reward_column
+    ).reset_index()
+    columns = [
+        "period",
+        "month",
+        *(f"period_{int(period)}_{portfolio}" for period in sorted(selected["selection_period"].unique()) for portfolio in PERIOD_FRONTIER_PORTFOLIOS),
+    ]
+    return wide.reindex(columns=columns)
+
+
+def _configuration_path_value(value: float | int) -> str:
+    return f"{value:g}".replace("-", "minus").replace(".", "p")
+
+
+def write_period_frontier_return_rates(
+    summary: pd.DataFrame,
+    scenario: SweepScenario,
+    output_dir: Path,
+) -> list[Path]:
+    """Write one full-horizon risk-band frontier CSV per access plan."""
+    access_plans = (
+        sorted(summary["access_plan"].dropna().unique())
+        if "access_plan" in summary
+        else [None]
+    )
+    outputs = []
+    users = _configuration_path_value(scenario.users)
+    hardware = _configuration_path_value(scenario.hardware_budget_usd)
+    confidential = _configuration_path_value(scenario.confidential_share)
+    service = _configuration_path_value(scenario.service_budget_per_person_usd)
+    base_folder = (
+        output_dir
+        / "period_frontier_return_rates"
+        / f"users_{users}"
+        / f"max_hardware_invest_usd_{hardware}"
+        / f"confidential_document_fraction_{confidential}"
+    )
+    for access_plan in access_plans:
+        rates = period_frontier_return_rates(summary, access_plan)
+        if rates.empty:
+            continue
+        folder = base_folder / (f"access_plan_{access_plan}" if access_plan else "")
+        filename = (
+            f"users_{users}_max_hardware_invest_usd_{hardware}_"
+            f"confidential_document_fraction_{confidential}_service_usd_{service}_"
+            f"plateau_{str(scenario.plateau).lower()}"
+            f"{f'_access_plan_{access_plan}' if access_plan else ''}.csv"
+        )
+        folder.mkdir(parents=True, exist_ok=True)
+        output_path = folder / filename
+        rates.to_csv(output_path, index=False)
+        outputs.append(output_path)
+    return outputs
+
+
+def hardware_budget_sensitivity_records(
+    summary: pd.DataFrame,
+    scenario: SweepScenario,
+    company_profile: str,
+) -> pd.DataFrame:
+    """Return final-period frontier selections used for hardware-budget sensitivity plots."""
+    selected = period_frontier_selections(summary[summary["service_provider"] == "local_hardware"])
+    if selected.empty:
+        return selected
+    final_period = summary["period"].max()
+    selected = selected[selected["selection_period"] == final_period].copy()
+    selected["company_profile"] = company_profile
+    selected["users"] = scenario.users
+    selected["service_budget_per_person_usd"] = scenario.service_budget_per_person_usd
+    selected["hardware_budget_usd"] = scenario.hardware_budget_usd
+    selected["confidential_document_share"] = scenario.confidential_share
+    selected["capability_plateau_after_18_months"] = scenario.plateau
+    return selected
+
+
+def hardware_budget_time_sensitivity_records(
+    summary: pd.DataFrame,
+    scenario: SweepScenario,
+    company_profile: str,
+) -> pd.DataFrame:
+    """Return one local-hardware frontier selection per risk band and simulation period."""
+    selected = period_frontier_selections(summary[summary["service_provider"] == "local_hardware"])
+    if selected.empty:
+        return selected
+    selected["company_profile"] = company_profile
+    selected["users"] = scenario.users
+    selected["service_budget_per_person_usd"] = scenario.service_budget_per_person_usd
+    selected["hardware_budget_usd"] = scenario.hardware_budget_usd
+    selected["confidential_document_share"] = scenario.confidential_share
+    selected["capability_plateau_after_18_months"] = scenario.plateau
+    return selected
+
+
+def rebuild_hardware_budget_sensitivity(output_dir: Path) -> pd.DataFrame:
+    """Rebuild hardware-only sensitivity records from persisted final-period frontier points."""
+    points_path = output_dir / "portfolio_efficiency_risk_points.csv"
+    if not points_path.exists():
+        return pd.DataFrame()
+    points = pd.read_csv(points_path)
+    grouping = [
+        "company_profile", "users", "service_budget_per_person_usd", "hardware_budget_usd",
+        "confidential_document_share", "capability_plateau_after_18_months",
+    ]
+    records = []
+    for key, group in points.groupby(grouping, sort=False):
+        profile, users, service, hardware, confidential, plateau = key
+        plateau_value = str(plateau).lower() == "true"
+        scenario = SweepScenario(int(users), float(service), float(hardware), float(confidential), plateau_value)
+        selected = hardware_budget_sensitivity_records(group, scenario, str(profile))
+        if not selected.empty:
+            records.append(selected)
+    return pd.concat(records, ignore_index=True) if records else pd.DataFrame()
+
+
+def plot_hardware_budget_sensitivity(
+    records: pd.DataFrame,
+    output_dir: Path,
+    users: int | None = None,
+) -> list[Path]:
+    """Plot hardware-only return/risk/user against hardware budget."""
+    required = {
+        "company_profile", "portfolio", "users", "service_budget_per_person_usd", "hardware_budget_usd",
+        "confidential_document_share", "capability_plateau_after_18_months",
+        "median_annualized_return_rate", "annualized_return_rate_risk_stddev",
+    }
+    if records.empty or not required.issubset(records.columns):
+        return []
+    values = records.copy()
+    if users is not None:
+        values = values[values["users"] == users].copy()
+        if values.empty:
+            return []
+    risk = values["annualized_return_rate_risk_stddev"]
+    values = values[np.isfinite(risk) & (risk > 0.0)].copy()
+    metric = "return_risk" if users is not None else "return_risk_per_user"
+    values[metric] = (
+        values["median_annualized_return_rate"]
+        / values["annualized_return_rate_risk_stddev"]
+    )
+    if users is None:
+        values[metric] /= values["users"]
+    plots_dir = output_dir / "hardware_budget_sensitivity"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for column, preferred in (
+        ("service_budget_per_person_usd", values["service_budget_per_person_usd"].min()),
+        ("confidential_document_share", values["confidential_document_share"].min()),
+        ("capability_plateau_after_18_months", False),
+    ):
+        if preferred in set(values[column]):
+            values = values[values[column] == preferred]
+        else:
+            values = values[values[column] == values[column].min()]
+    colors = dict(zip(sorted(values["company_profile"].unique()), plt.get_cmap("tab10").colors, strict=False))
+    fig, axes = plt.subplots(1, len(PERIOD_FRONTIER_PORTFOLIOS), figsize=(13, 3.8), sharey=True)
+    for axis, portfolio in zip(axes, PERIOD_FRONTIER_PORTFOLIOS, strict=True):
+        panel = values[values["portfolio"] == portfolio]
+        for profile, profile_values in panel.groupby("company_profile", sort=True):
+            bands = (
+                profile_values.groupby("hardware_budget_usd", as_index=False)[metric]
+                .agg(median="median", p10=lambda values: values.quantile(0.1), p90=lambda values: values.quantile(0.9))
+                .sort_values("hardware_budget_usd")
+            )
+            axis.fill_between(bands["hardware_budget_usd"], bands["p10"], bands["p90"], color=colors[profile], alpha=0.16)
+            axis.plot(bands["hardware_budget_usd"], bands["median"], color=colors[profile], linewidth=1.8, label=profile)
+        axis.set_title(portfolio.replace("_", " "))
+        axis.set_xlabel("Maximum hardware investment (USD)")
+        axis.set_xscale("symlog", linthresh=1_000.0)
+        axis.grid(axis="y", alpha=0.25)
+    axes[0].set_ylabel(
+        "Median annualized return / risk SD" + ("" if users is not None else " / user")
+    )
+    axes[-1].legend(fontsize=7, loc="best")
+    title = "Hardware-only budget sensitivity"
+    subtitle = (
+        f"Fixed at {users} users."
+        if users is not None
+        else "Lines are medians across company sizes; bands show the 10th–90th percentile."
+    )
+    fig.suptitle(f"{title}\n{subtitle}", fontsize=10)
+    fig.tight_layout()
+    path = plots_dir / (f"return_risk_users_{users}.png" if users is not None else "return_risk_per_user.png")
+    fig.savefig(path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+    paths.append(path)
+    return paths
+
+
+def plot_hardware_budget_time_sensitivity(
+    records: pd.DataFrame,
+    output_dir: Path,
+    color_limits: tuple[float, float] | None = None,
+) -> Path | None:
+    """Plot local-hardware return/risk by investment and simulation month."""
+    required = {
+        "company_profile", "portfolio", "users", "service_budget_per_person_usd", "hardware_budget_usd",
+        "confidential_document_share", "capability_plateau_after_18_months", "month",
+        "median_annualized_return_rate", "annualized_return_rate_risk_stddev",
+    }
+    if records.empty or not required.issubset(records.columns):
+        return None
+    values = records.copy()
+    risk = values["annualized_return_rate_risk_stddev"]
+    values = values[np.isfinite(risk) & (risk > 0.0) & (values["hardware_budget_usd"] > 0.0)].copy()
+    if values.empty:
+        return None
+    values["return_risk"] = values["median_annualized_return_rate"] / values["annualized_return_rate_risk_stddev"]
+    for column, preferred in (
+        ("service_budget_per_person_usd", values["service_budget_per_person_usd"].min()),
+        ("confidential_document_share", values["confidential_document_share"].min()),
+        ("capability_plateau_after_18_months", False),
+    ):
+        values = values[values[column] == (preferred if preferred in set(values[column]) else values[column].min())]
+    profiles = sorted(values["company_profile"].unique())
+    if not profiles:
+        return None
+    limits = color_limits or tuple(np.nanpercentile(values["return_risk"], [2.0, 98.0]))
+    figure, axes = plt.subplots(
+        len(PERIOD_FRONTIER_PORTFOLIOS), len(profiles), figsize=(3.0 * len(profiles), 2.4 * len(PERIOD_FRONTIER_PORTFOLIOS)),
+        sharex=True, sharey=True, squeeze=False,
+    )
+    image = None
+    for row, portfolio in enumerate(PERIOD_FRONTIER_PORTFOLIOS):
+        for column, profile in enumerate(profiles):
+            axis = axes[row, column]
+            panel = values[(values["portfolio"] == portfolio) & (values["company_profile"] == profile)]
+            matrix = panel.pivot_table(
+                index="hardware_budget_usd", columns="month", values="return_risk", aggfunc="median"
+            ).sort_index().sort_index(axis=1)
+            image = axis.pcolormesh(
+                matrix.columns.to_numpy(float), matrix.index.to_numpy(float), matrix.to_numpy(float),
+                shading="nearest", cmap="viridis", vmin=limits[0], vmax=limits[1],
+            )
+            axis.set_yscale("log")
+            if row == 0:
+                axis.set_title(profile.replace("_", " "), fontsize=8)
+            if column == 0:
+                axis.set_ylabel(f"{portfolio.replace('_', ' ')}\nHardware USD", fontsize=7)
+            if row == len(PERIOD_FRONTIER_PORTFOLIOS) - 1:
+                axis.set_xlabel("Month", fontsize=7)
+            axis.tick_params(labelsize=6)
+    figure.colorbar(image, ax=axes, label="Median annualized return / risk SD", shrink=0.82)
+    figure.suptitle("Hardware-only sensitivity over time", fontsize=11)
+    figure.tight_layout()
+    plots_dir = output_dir / "hardware_budget_sensitivity"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    path = plots_dir / "return_risk_by_hardware_and_month.png"
+    figure.savefig(path, dpi=180, bbox_inches="tight")
+    plt.close(figure)
+    return path
+
+
+def collect_hardware_budget_sensitivity(output_dir: Path) -> pd.DataFrame:
+    """Combine per-profile sensitivity files, including independently run array jobs."""
+    paths = sorted(output_dir.glob("*/portfolio_hardware_budget_sensitivity.csv"))
+    if not paths:
+        return pd.DataFrame()
+    return pd.concat([pd.read_csv(path) for path in paths], ignore_index=True)
+
+
+def collect_hardware_budget_time_sensitivity(output_dir: Path) -> pd.DataFrame:
+    paths = sorted(output_dir.glob("*/portfolio_hardware_budget_time_sensitivity.csv"))
+    if not paths:
+        return pd.DataFrame()
+    return pd.concat([pd.read_csv(path) for path in paths], ignore_index=True)
 
 
 def paired_future_return_rates(
@@ -1258,6 +1589,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=Path, default=config_path, help="YAML configuration file (default: simulation_config.yaml).")
     parser.add_argument("--replot-only", action="store_true", help="Regenerate all plots from portfolio_scenario_manifest.csv without resimulating.")
     parser.add_argument(
+        "--replot-hardware-budget-sensitivity",
+        action="store_true",
+        help="Regenerate only the hardware-budget sensitivity plot from persisted frontier CSVs.",
+    )
+    parser.add_argument(
+        "--hardware-budget-sensitivity-users",
+        type=int,
+        default=None,
+        help="Plot only this user count and omit per-user normalization from the sensitivity y-axis.",
+    )
+    parser.add_argument(
+        "--hardware-budget-time-sensitivity-color-limits",
+        nargs=2,
+        type=float,
+        metavar=("MIN", "MAX"),
+        default=None,
+        help="Fix the time-sensitivity heatmap color scale to MIN and MAX.",
+    )
+    parser.add_argument(
         "--linear-x-limits",
         nargs=2,
         type=float,
@@ -1328,6 +1678,12 @@ def parse_args() -> argparse.Namespace:
         args.linear_x_limits = tuple(args.linear_x_limits)
         if args.linear_x_limits[0] >= args.linear_x_limits[1]:
             raise SystemExit("--linear-x-limits requires MIN to be less than MAX.")
+    if args.hardware_budget_sensitivity_users is not None and args.hardware_budget_sensitivity_users <= 0:
+        raise SystemExit("--hardware-budget-sensitivity-users must be positive.")
+    if args.hardware_budget_time_sensitivity_color_limits is not None:
+        args.hardware_budget_time_sensitivity_color_limits = tuple(args.hardware_budget_time_sensitivity_color_limits)
+        if args.hardware_budget_time_sensitivity_color_limits[0] >= args.hardware_budget_time_sensitivity_color_limits[1]:
+            raise SystemExit("--hardware-budget-time-sensitivity-color-limits requires MIN to be less than MAX.")
     return args
 
 
@@ -1379,12 +1735,30 @@ def run_company_profile(
     paired_future_manifest_frames = []
     sleeve_statistics_frames = []
     sleeve_manifest_frames = []
+    hardware_sensitivity_frames = []
+    hardware_time_sensitivity_frames = []
+    seed_groups = dict.fromkeys(
+        (scenario.users, scenario.service_budget_per_person_usd, scenario.confidential_share, scenario.plateau)
+        for scenario in scenarios
+    )
+    paired_seed_indices = {group: index for index, group in enumerate(seed_groups)}
     with executor_cls(max_workers=min(args.concurrency, len(scenarios))) as executor:
-        futures = {executor.submit(simulate_portfolio_scenario, scenario, config, index): scenario for index, scenario in enumerate(scenarios)}
+        futures = {
+            executor.submit(
+                simulate_portfolio_scenario,
+                scenario,
+                config,
+                paired_seed_indices[(scenario.users, scenario.service_budget_per_person_usd, scenario.confidential_share, scenario.plateau)],
+            ): scenario
+            for scenario in scenarios
+        }
         for future in tqdm(as_completed(futures), total=len(futures), desc=f"Sweeping {name}", unit="scenario"):
             scenario = futures[future]
             results, metadata = future.result()
             summary = return_change_summary(results)
+            write_period_frontier_return_rates(summary, scenario, output_dir)
+            hardware_sensitivity_frames.append(hardware_budget_sensitivity_records(summary, scenario, name))
+            hardware_time_sensitivity_frames.append(hardware_budget_time_sensitivity_records(summary, scenario, name))
             selected = select_portfolios(summary, scenario, metadata)
             selected["company_profile"] = name
             selected_frames.append(selected)
@@ -1420,6 +1794,12 @@ def run_company_profile(
         ["users", "service_budget_per_person_usd", "hardware_budget_usd", "confidential_document_share", "capability_plateau_after_18_months", "month", "portfolio"]
     )
     selected.to_csv(output_dir / "portfolio_scenario_manifest.csv", index=False)
+    pd.concat(hardware_sensitivity_frames, ignore_index=True).to_csv(
+        output_dir / "portfolio_hardware_budget_sensitivity.csv", index=False
+    )
+    pd.concat(hardware_time_sensitivity_frames, ignore_index=True).to_csv(
+        output_dir / "portfolio_hardware_budget_time_sensitivity.csv", index=False
+    )
     asset_timeseries = pd.concat(asset_timeseries_frames, ignore_index=True)
     write_fixed_asset_csvs(asset_timeseries, output_dir)
     write_paired_future_return_rates(
@@ -1460,6 +1840,37 @@ def run_company_profile(
 def main() -> None:
     args = parse_args()
     profiles = selected_company_profiles(args)
+    if args.replot_hardware_budget_sensitivity:
+        sensitivity_dirs = sorted(
+            path.parent for path in args.output_dir.glob("*/portfolio_efficiency_risk_points.csv")
+        )
+        if not sensitivity_dirs:
+            raise SystemExit(
+                f"No profile frontier CSVs found below {args.output_dir}; run the portfolio sweep first."
+            )
+        for sensitivity_dir in sensitivity_dirs:
+            sensitivity = rebuild_hardware_budget_sensitivity(sensitivity_dir)
+            if not sensitivity.empty:
+                sensitivity.to_csv(sensitivity_dir / "portfolio_hardware_budget_sensitivity.csv", index=False)
+        sensitivity = collect_hardware_budget_sensitivity(args.output_dir)
+        if sensitivity.empty:
+            raise SystemExit("No local-hardware frontier selections were found for the sensitivity plot.")
+        sensitivity.to_csv(args.output_dir / "portfolio_hardware_budget_sensitivity.csv", index=False)
+        time_sensitivity = collect_hardware_budget_time_sensitivity(args.output_dir)
+        if not time_sensitivity.empty:
+            time_sensitivity.to_csv(
+                args.output_dir / "portfolio_hardware_budget_time_sensitivity.csv", index=False
+            )
+            plot_hardware_budget_time_sensitivity(
+                time_sensitivity, args.output_dir, args.hardware_budget_time_sensitivity_color_limits
+            )
+        paths = plot_hardware_budget_sensitivity(
+            sensitivity, args.output_dir, args.hardware_budget_sensitivity_users
+        )
+        if not paths:
+            raise SystemExit("No sensitivity records matched the requested user count.")
+        print(f"Wrote {paths[0]}")
+        return
     if args.replot_only:
         output_dirs = [args.output_dir] if (args.output_dir / "portfolio_scenario_manifest.csv").exists() else [args.output_dir / name for name in profiles]
         missing = [output_dir for output_dir in output_dirs if not (output_dir / "portfolio_scenario_manifest.csv").exists()]
@@ -1507,6 +1918,29 @@ def main() -> None:
                 args.output_dir / "portfolio_per_bracket_pareto_table.md",
                 args.pareto_min_incremental_efficiency_gain,
             )
+        sensitivity_dirs = sorted(
+            path.parent for path in args.output_dir.glob("*/portfolio_efficiency_risk_points.csv")
+        )
+        for sensitivity_dir in sensitivity_dirs:
+            sensitivity = rebuild_hardware_budget_sensitivity(sensitivity_dir)
+            if not sensitivity.empty:
+                sensitivity.to_csv(sensitivity_dir / "portfolio_hardware_budget_sensitivity.csv", index=False)
+        sensitivity_path = args.output_dir / "portfolio_hardware_budget_sensitivity.csv"
+        sensitivity = collect_hardware_budget_sensitivity(args.output_dir)
+        if sensitivity.empty and sensitivity_path.exists():
+            sensitivity = pd.read_csv(sensitivity_path)
+        elif not sensitivity.empty:
+            sensitivity.to_csv(sensitivity_path, index=False)
+        if not args.no_plots:
+            plot_hardware_budget_sensitivity(sensitivity, args.output_dir)
+            time_sensitivity = collect_hardware_budget_time_sensitivity(args.output_dir)
+            if not time_sensitivity.empty:
+                time_sensitivity.to_csv(
+                    args.output_dir / "portfolio_hardware_budget_time_sensitivity.csv", index=False
+                )
+                plot_hardware_budget_time_sensitivity(
+                    time_sensitivity, args.output_dir, args.hardware_budget_time_sensitivity_color_limits
+                )
         return
     if args.resolution_months <= 0 or 18 % args.resolution_months != 0:
         raise SystemExit("--resolution-months must be a positive divisor of 18 so the plateau occurs exactly after 18 months.")
@@ -1569,6 +2003,18 @@ def main() -> None:
     )
     for name, employee_mix in profiles.items():
         run_company_profile(name, employee_mix, base_config, args, company_profile_index(name))
+    sensitivity = collect_hardware_budget_sensitivity(args.output_dir)
+    sensitivity.to_csv(args.output_dir / "portfolio_hardware_budget_sensitivity.csv", index=False)
+    time_sensitivity = collect_hardware_budget_time_sensitivity(args.output_dir)
+    if not time_sensitivity.empty:
+        time_sensitivity.to_csv(
+            args.output_dir / "portfolio_hardware_budget_time_sensitivity.csv", index=False
+        )
+    if not args.no_plots:
+        plot_hardware_budget_sensitivity(sensitivity, args.output_dir)
+        plot_hardware_budget_time_sensitivity(
+            time_sensitivity, args.output_dir, args.hardware_budget_time_sensitivity_color_limits
+        )
     if not args.skip_combined_summary:
         combined_points = pd.concat(
             [pd.read_csv(args.output_dir / name / "portfolio_efficiency_risk_points.csv") for name in profiles],
