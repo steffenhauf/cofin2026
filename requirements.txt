@@ -6,6 +6,8 @@ plotly
 kaleido
 tqdm
 numba
+PyYAML
+openpyxl
 
 # Optional for --backend torch-mps on Apple Silicon:
 # torch

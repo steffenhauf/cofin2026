@@ -4,6 +4,8 @@ Toy Monte Carlo simulation for time-dependent LLM efficiency return-rate curves.
 
 The model simulates 500 users by default over 3 years at quarterly resolution. It assigns each user to one of five adopter personas, simulates LLM adoption and realized productivity gain, applies model capability and cost scenarios, and then fits efficient return-rate curves to the simulated data.
 
+All simulation inputs and sweep grids are in [`simulation_config.yaml`](simulation_config.yaml). Each executable accepts `--config PATH` to use a different YAML file, for example `python simulate_llm_efficiency.py --config my_scenario.yaml` or `python sweep_portfolio_rate_changes.py --config my_scenario.yaml`. The file comments give units, source anchors, and suggested sensitivity ranges.
+
 ## Installation
 
 Create a virtual environment and install the dependencies:
@@ -189,16 +191,83 @@ It runs six outer company work-mix profiles into separate subfolders:
 `software_engineering_heavy`, `knowledge_worker_heavy`, and
 `creative_worker_heavy`. Select a subset
 with `--company-profiles software_engineering_heavy,knowledge_worker_heavy`.
-For each configuration and time point it selects low-risk, balanced-optimum,
-and high-gain portfolios from the simulated efficient frontier. The two wide
-CSVs have the same columns:
+For each configuration it selects low-risk, balanced-optimum, and high-gain
+assets once from the final-period efficient frontier, then writes the complete
+history of those same assets. The two selected-asset wide CSVs have the same
+columns:
 
 - `portfolio_rate_changes.csv`: median period-to-period return-rate change.
-- `portfolio_rate_change_risk.csv`: standard deviation of that change across
-  Monte Carlo runs.
+- `portfolio_return_rate_risk.csv`: standard deviation of the return rate
+  across Monte Carlo runs.
 
 `portfolio_scenario_manifest.csv` documents each selected internal portfolio,
-including any necessary sigma-rule fallback. The sweep also writes
+including its fixed model, access-plan, hardware, token-cost, provider,
+fallback, refresh, and shock identity plus any sigma-rule fallback. It also
+writes virtual representative-asset histories for every such fixed identity:
+
+- `portfolio_fixed_asset_rate_changes.csv`
+- `portfolio_fixed_asset_rate_change_risk.csv`
+- `portfolio_fixed_asset_manifest.csv`
+
+For Excel-based mean-variance analysis, the sweep additionally writes compact,
+run-paired future paths:
+
+- `portfolio_paired_future_return_rates.csv`: one row per organisation scenario,
+  Monte Carlo `future_id`, and month; the `low_risk`, `optimum`, and
+  `high_gain` columns are annualized return rates from the same simulated future.
+- `portfolio_paired_future_manifest.csv`: the selected asset identity behind
+  each of those columns.
+
+Calculate covariances only within one `organization_scenario_id` and a common
+month (or a consistently defined planning horizon). The paired `future_id`
+preserves common simulated uncertainty across the selected assets.
+
+Create an interactive Excel mean-variance workbook from a completed sweep:
+
+```bash
+python create_welch_portfolio_workbook.py portfolio_sweep_slurm
+```
+
+The workbook stores the paired-future means and covariance matrix for every
+organization scenario, so users can select the company profile, size, budgets,
+confidential-work share, and capability path in Excel before changing the three
+asset weights.
+
+Plot the candidate selected from the Pareto frontier independently at every
+evaluation horizon, rather than fixing the final-period selection:
+
+```bash
+python plot_horizon_pareto_asset_selection.py portfolio_sweep_slurm
+```
+
+It writes separate low-risk, optimum, and high-return time-series figures,
+combined profile/service plots, and an auditable CSV of the selected assets.
+It also writes monthly, quarterly, and annual Sankey diagrams, each with three
+panels (low-risk, optimum, and high-return). Nodes are service types at each
+evaluation horizon and link widths count company-profile × employee-bracket
+combinations that move between the selected service types. Monthly Sankeys
+require a sweep generated with `portfolio.resolution_months: 1`; a quarterly
+sweep cannot supply intervening monthly selections.
+
+For separate low-risk, optimum, and high-return D3 Sankey/return panels with
+deterministic node/link sorting and source-to-target SVG gradients, use the
+standalone generator:
+
+```bash
+python plot_horizon_pareto_asset_selection_d3.py portfolio_sweep_slurm_v5
+```
+
+The lower return chart includes one-sigma error bars around each service's
+median annualized return.
+
+Add `--png` when Playwright (with a Chromium browser) or headless Firefox is
+available to render matching PNG files alongside the HTML outputs.
+Add `--show-bracket-composition` to split each service node into employee-
+bracket share segments with bracket-specific opacity.
+Use `--show-organization-composition` for a parallel set of plots segmented by
+organization profile instead. The two flags can be used independently.
+
+The sweep also writes
 `portfolio_month_by_month_grid.png` and an interactive
 `portfolio_risk_return_animation.html`.
 
@@ -387,7 +456,10 @@ The 3D plot uses:
 - y: annualized return-rate risk
 - z: annualized return rate
 
-Risk follows the finance-style volatility idea requested here: the standard deviation of scenario return-rate changes observed up to the simulated point in time. Plots annualize both return rate and this risk by `12 / resolution_months`.
+Risk follows the mean-variance definition: the standard deviation of the
+return rate. The portfolio sweep estimates it across Monte Carlo futures for
+the same asset and month. Plots annualize both return rate and this risk by
+`12 / resolution_months`.
 
 ## Model Assumptions
 
@@ -633,6 +705,11 @@ Costs and hardware:
 - The 26B-and-larger local-model frontier-quality shares are sensitivity assumptions informed by the Gemma model card and task heterogeneity evidence, rather than benchmark claims. [HARDWARE_BENCHMARKS.md](HARDWARE_BENCHMARKS.md) gives the values and sources.
 - On-premise and OSS-cloud scenarios for companies up to 50 employees include a default 0.5-FTE TVöD Bund E 12/Stufe 3 IT position, including a 25% employer-cost load estimate. Use `--disable-it-support` or `--it-support-max-users` to change this.
 - The sweep writes `portfolio_per_bracket_pareto_table.md` at its output root. Its columns are grouped by employee bracket and portfolio split; rows group capability/token shock assumptions and work-mix profiles. Cells report the selected asset type, return, and risk.
+
+Pareto selection excludes an asset unless its median efficiency gain is strictly
+above `median_zero_risk_efficiency_gain`, the no-incremental-cost existing-tools
+baseline. Set `--pareto-min-incremental-efficiency-gain` to require a further
+absolute gain above that baseline.
 
 ## Simulation Flow
 
