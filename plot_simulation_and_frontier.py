@@ -34,26 +34,19 @@ from sweep_portfolio_rate_changes import (
 RISK = "annualized_return_rate_risk_stddev"
 REWARD = "median_annualized_return_rate"
 
-
 SERVICE_MARKERS = {
-    "cloud": "o",
-    "on-prem": "^",
-    "oss-cloud": "D",
-    "European": "s",
+    "global_service": "o",
+    "local_hardware": "^",
+    "eu_cloud_oss": "D",
+    "european_service": "s",
 }
 
-
-def _service_type(row: pd.Series) -> str:
-    provider = str(row["service_provider"])
-    if provider == "global_service":
-        return "cloud"
-    if provider == "local_hardware":
-        return "on-prem"
-    if provider == "eu_cloud_oss":
-        return "oss-cloud"
-    if provider == "european_service":
-        return "European"
-    return "cloud"
+SERVICE_LABELS = {
+    "global_service": "Cloud",
+    "local_hardware": "On-prem",
+    "eu_cloud_oss": "OSS cloud",
+    "european_service": "European",
+}
 
 
 def _illustrative(ax, service_paths: pd.DataFrame, individual_paths: int) -> None:
@@ -88,91 +81,160 @@ def _illustrative(ax, service_paths: pd.DataFrame, individual_paths: int) -> Non
     ax.legend(loc="best", fontsize=5.8)
 
 
-def _frontier(ax, final_points: pd.DataFrame, intermediate_points: pd.DataFrame,
-              selections: pd.DataFrame, x_max: float) -> None:
-    if not intermediate_points.empty:
-        ax.scatter(
-            intermediate_points[RISK], intermediate_points[REWARD], s=9, alpha=0.07,
-            color="#9ca3af", linewidths=0, label="Intermediate-period candidates", zorder=1,
-        )
-    ax.scatter(
-        final_points[RISK], final_points[REWARD], s=22, alpha=0.48, color="#4b5563",
-        linewidths=0, label="Final-period candidates", zorder=2,
+def _shock_colors(results: pd.DataFrame) -> pd.DataFrame:
+    """Return RGB colours from shocks actually triggered in each asset's runs."""
+    final_flags = (
+        results.groupby([*ASSET_IDENTITY_COLUMNS, "run"], sort=False)[
+            ["embargo_shock", "sudden_break_even_shock", "gradual_break_even_shock", "capability_plateau_shock"]
+        ]
+        .max()
+        .reset_index()
     )
-    global_frontier = efficient_frontier(
-        pd.concat([intermediate_points, final_points], ignore_index=True), RISK, REWARD
+    final_flags["price_shock"] = final_flags[["sudden_break_even_shock", "gradual_break_even_shock"]].max(axis=1)
+    return (
+        final_flags.groupby(ASSET_IDENTITY_COLUMNS, sort=False)[["price_shock", "embargo_shock", "capability_plateau_shock"]]
+        .mean()
+        .rename(columns={
+            "price_shock": "shock_red",
+            "embargo_shock": "shock_blue",
+            "capability_plateau_shock": "shock_green",
+        })
+        .reset_index()
     )
-    ax.plot(
-        global_frontier[RISK], global_frontier[REWARD], color="#7c3aed", linewidth=1.0,
-        linestyle="--", label="All-horizon Pareto frontier", zorder=3,
-    )
-    last_month: float | None = None
-    for index, (_, row) in enumerate(global_frontier.sort_values(RISK).iterrows()):
-        month = float(row["month"])
-        if month == last_month:
+
+
+def _portfolio_mixes(results: pd.DataFrame, sleeves: pd.DataFrame, shock_colours: pd.DataFrame) -> pd.DataFrame:
+    """Sample fully allocated mixes of the four paired service sleeves at the final horizon."""
+    final_period = results["period"].max()
+    selected = sleeves[["service_sleeve", *ASSET_IDENTITY_COLUMNS]].merge(
+        shock_colours, on=ASSET_IDENTITY_COLUMNS, how="left"
+    ).fillna(0.0)
+    paired = results[results["period"] == final_period].merge(selected, on=ASSET_IDENTITY_COLUMNS, how="inner")
+    paths = paired.pivot(index="run", columns="service_sleeve", values="annualized_return_rate").dropna()
+    weights = np.random.default_rng(20260711).dirichlet(np.ones(paths.shape[1]), size=200)
+    returns = paths.to_numpy() @ weights.T
+    sleeve_colours = selected.set_index("service_sleeve").reindex(paths.columns)[["shock_red", "shock_green", "shock_blue"]].to_numpy()
+    mix_colours = weights @ sleeve_colours
+    return pd.DataFrame({
+        "sample": np.arange(len(weights)),
+        "period": final_period,
+        RISK: returns.std(axis=0, ddof=1),
+        REWARD: np.median(returns, axis=0),
+        "shock_red": mix_colours[:, 0],
+        "shock_green": mix_colours[:, 1],
+        "shock_blue": mix_colours[:, 2],
+    })
+
+
+def _display_colours(values: pd.DataFrame | np.ndarray | tuple[float, float, float], floor: float) -> np.ndarray:
+    return floor + (1.0 - floor) * np.asarray(values, dtype=float)
+
+
+def _top_shock_colours(*frames: pd.DataFrame, floor: float) -> tuple[list[Line2D], list[str]]:
+    """Return the nine most common displayed shock colours, excluding pure primaries."""
+    colours = pd.concat([frame[["shock_red", "shock_green", "shock_blue"]] for frame in frames], ignore_index=True)
+    rounded = np.rint(colours.to_numpy() * 4.0) / 4.0
+    counts = pd.DataFrame(rounded, columns=["shock_red", "shock_green", "shock_blue"]).value_counts()
+    handles = []
+    labels = []
+    names = ("Price", "Plateau", "Embargo")
+    primary_colours = {(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)}
+    for colour, _ in counts.items():
+        if colour in primary_colours:
             continue
-        ax.annotate(
-            f"{month:g}m", (row[RISK], row[REWARD]), xytext=(2, 4 if index % 2 else -8),
-            textcoords="offset points", color="#6d28d9", fontsize=4.8, zorder=4,
-        )
-        last_month = month
-    frontier = efficient_frontier(final_points, RISK, REWARD)
-    ax.plot(frontier[RISK], frontier[REWARD], color="#2563eb", linewidth=1.3, label="Final-period Pareto frontier", zorder=4)
-    frontier = frontier.copy()
-    frontier["service_type"] = frontier.apply(_service_type, axis=1)
-    for service_type, service_points in frontier.groupby("service_type", sort=False):
+        active = [f"{name} {value:.0%}" for name, value in zip(names, colour) if value >= 0.125]
+        handles.append(Line2D([], [], marker="o", linestyle="", color=_display_colours(colour, floor)))
+        labels.append(" + ".join(active) if active else "No shocks")
+        if len(handles) == 9:
+            break
+    return handles, labels
+
+
+def _frontier_marker(ax, row: pd.Series, marker: str, size: float, zorder: int, floor: float) -> None:
+    colour = _display_colours([row["shock_red"], row["shock_green"], row["shock_blue"]], floor)
+    ax.scatter([row[RISK]], [row[REWARD]], s=size, marker=marker, color=[colour], linewidths=0, zorder=zorder)
+
+
+def _frontier(ax, final_points: pd.DataFrame, results: pd.DataFrame,
+              sleeves: pd.DataFrame, x_max: float, shock_color_floor: float) -> None:
+    shock_colours = _shock_colors(results)
+    final_points = final_points.merge(shock_colours, on=ASSET_IDENTITY_COLUMNS, how="left").fillna(0.0)
+    for provider, values in final_points.groupby("service_provider", sort=False):
         ax.scatter(
-            service_points[RISK], service_points[REWARD], s=30,
-            marker=SERVICE_MARKERS[service_type], color="#2563eb",
-            edgecolor="white", linewidth=0.5, zorder=5,
+            values[RISK], values[REWARD], s=22, marker=SERVICE_MARKERS[provider],
+            color=_display_colours(values[["shock_red", "shock_green", "shock_blue"]], shock_color_floor),
+            linewidths=0, zorder=2,
         )
-    colors = {"low_risk": "#f59e0b", "medium_risk": "#059669", "high_risk": "#dc2626"}
-    labels = {"low_risk": "Low risk", "medium_risk": "Medium risk", "high_risk": "High risk"}
-    for _, row in selections.iterrows():
-        name = row["portfolio"]
-        ax.scatter([row[RISK]], [row[REWARD]], s=64, marker=SERVICE_MARKERS[_service_type(row)],
-                   color=colors.get(name, "#7c3aed"),
-                   edgecolor="#111827", linewidth=0.9, zorder=6)
+    service_pareto = efficient_frontier(final_points, RISK, REWARD)
+    ax.plot(service_pareto[RISK], service_pareto[REWARD], color="#a855f7", linewidth=1.0,
+            linestyle="--", label="Single-service Pareto frontier", zorder=10)
+    for _, row in service_pareto.iterrows():
+        _frontier_marker(ax, row, SERVICE_MARKERS[row["service_provider"]], 36, 4, shock_color_floor)
+    mixes = _portfolio_mixes(results, sleeves, shock_colours)
+    ax.scatter(mixes[RISK], mixes[REWARD], s=20, marker="X",
+               color=_display_colours(mixes[["shock_red", "shock_green", "shock_blue"]], shock_color_floor),
+               linewidths=0, zorder=3)
+    pareto = efficient_frontier(mixes, RISK, REWARD)
+    ax.plot(pareto[RISK], pareto[REWARD], color="#c026d3", linewidth=1.1,
+            label="Portfolio Pareto frontier", zorder=11)
+    for _, row in pareto.iterrows():
+        _frontier_marker(ax, row, "X", 36, 5, shock_color_floor)
+    mix_selections = period_frontier_selections(mixes)
+    mix_selections = mix_selections[mix_selections["selection_period"] == mix_selections["selection_period"].max()]
+    for _, row in mix_selections.iterrows():
+        _frontier_marker(ax, row, "X", 70, 7, shock_color_floor)
+    service_selections = period_frontier_selections(final_points)
+    service_selections = service_selections[service_selections["selection_period"] == service_selections["selection_period"].max()]
+    for _, row in service_selections.iterrows():
+        _frontier_marker(ax, row, SERVICE_MARKERS[row["service_provider"]], 70, 9, shock_color_floor)
     ax.set_xscale("linear")
-    selected_x_max = float(selections[RISK].max()) if not selections.empty else 0.0
+    selected_x_max = max(
+        float(mix_selections[RISK].max()) if not mix_selections.empty else 0.0,
+        float(service_selections[RISK].max()) if not service_selections.empty else 0.0,
+    )
     display_x_max = max(x_max, selected_x_max * 1.05)
     ax.set_xlim(0.0, display_x_max)
     visible_final = final_points[final_points[RISK].between(0.0, display_x_max)]
     values = visible_final[REWARD].to_numpy(float)
     low, high = np.nanpercentile(values, [1.0, 99.0])
-    if not selections.empty:
-        low = min(low, float(selections[REWARD].min()))
-        high = max(high, float(selections[REWARD].max()))
+    selected_rewards = pd.concat([mix_selections[REWARD], service_selections[REWARD]], ignore_index=True)
+    if not selected_rewards.empty:
+        low = min(low, float(selected_rewards.min()))
+        high = max(high, float(selected_rewards.max()))
     margin = max(1e-6, (high - low) * 0.10)
     ax.set_ylim(low - margin, high + margin)
     ax.set_xlabel("Annualized return-rate risk (SD)", fontsize=7)
     ax.set_ylabel("Median annualized return rate", fontsize=7)
     ax.tick_params(labelsize=6.5)
     ax.grid(alpha=0.18, linewidth=0.5)
-    context_legend = ax.legend(
-        *ax.get_legend_handles_labels(), fontsize=5.6, loc="upper left", framealpha=0.9
-    )
-    ax.add_artist(context_legend)
-    service_legend = ax.legend(
+    shock_handles, shock_labels = _top_shock_colours(final_points, mixes, floor=shock_color_floor)
+    shock_handles = [
+        Line2D([], [], marker="o", linestyle="", color=_display_colours(colour, shock_color_floor))
+        for colour in ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+    ] + shock_handles
+    shock_labels = ["R: Price only", "G: Plateau only", "B: Embargo only"] + shock_labels
+    global_legend = ax.legend(
         [
-            Line2D([], [], marker=marker, linestyle="", color="#2563eb", markeredgecolor="white",
-                   markeredgewidth=0.5)
-            for marker in SERVICE_MARKERS.values()
+            Line2D([], [], color="#c026d3", linewidth=1.1),
+            Line2D([], [], color="#a855f7", linewidth=1.0, linestyle="--"),
+            *[Line2D([], [], marker=SERVICE_MARKERS[provider], linestyle="", color="#111827") for provider in SERVICE_MARKERS],
+            Line2D([], [], marker="X", linestyle="", color="#111827"),
         ],
-        list(SERVICE_MARKERS), title="Final service type", fontsize=5.2, title_fontsize=5.5,
-        loc="center left", framealpha=0.9,
+        ["Mixed portfolio frontier", "Single-service frontier", *SERVICE_LABELS.values(), "Mix"],
+        title="Frontiers and service type", fontsize=4.8, title_fontsize=5.5,
+        loc="upper left", bbox_to_anchor=(0.0, 1.0), ncol=2, framealpha=0.9,
     )
-    ax.add_artist(service_legend)
+    ax.add_artist(global_legend)
     ax.legend(
-        [Line2D([], [], marker="o", linestyle="", color=color, markeredgecolor="#111827") for color in colors.values()],
-        list(labels.values()), title="Risk-band selection", fontsize=5.2, title_fontsize=5.5,
-        loc="lower right", framealpha=0.9,
+        shock_handles, shock_labels, title="Shocks — intensity = share of simulations",
+        fontsize=4.8, title_fontsize=5.5, loc="upper left", bbox_to_anchor=(0.0, 0.80),
+        ncol=2, framealpha=0.9,
     )
 
 
 def run_service_sleeve_sweep(
     users: int, profile: str, individual_paths: int, max_hardware_budget: float,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     if profile not in COMPANY_PROFILES:
         raise SystemExit(f"Unknown company profile for the service-sleeve sweep: {profile}")
     runs = max(20, individual_paths * 4)
@@ -183,6 +245,7 @@ def run_service_sleeve_sweep(
         runs=runs,
         seed=20260711,
         plateau_quarter=24,
+        stochastic_shocks=True,
         employee_mix=COMPANY_PROFILES[profile],
         backend=_resolve_backend("auto"),
     )
@@ -198,25 +261,22 @@ def run_service_sleeve_sweep(
         columns="service_sleeve",
         values="annualized_return_rate",
     ).reset_index()
-    return service_paths, summary
+    return service_paths, summary, results, manifest
 
 
 def render(
     output: Path, users: int, profile: str, x_max: float, individual_paths: int,
-    max_hardware_budget: float,
+    max_hardware_budget: float, shock_color_floor: float,
 ) -> None:
-    service_paths, summary = run_service_sleeve_sweep(
+    service_paths, summary, results, sleeves = run_service_sleeve_sweep(
         users, profile, individual_paths, max_hardware_budget
     )
     final_period = summary["period"].max()
     final_points = summary[summary["period"] == final_period]
-    intermediate_points = summary[summary["period"] < final_period]
-    selections = period_frontier_selections(summary)
-    selections = selections[selections["selection_period"] == final_period]
     figure, axes = plt.subplots(1, 2, figsize=(10.5, 4.2),
                                 gridspec_kw={"width_ratios": (1.08, 1.25), "wspace": 0.20})
     _illustrative(axes[0], service_paths, individual_paths)
-    _frontier(axes[1], final_points, intermediate_points, selections, x_max)
+    _frontier(axes[1], final_points, results, sleeves, x_max, shock_color_floor)
     figure.savefig(output, dpi=300, bbox_inches="tight")
     plt.close(figure)
 
@@ -233,6 +293,8 @@ def parse_args() -> argparse.Namespace:
                         help="Maximum upfront hardware budget for the left-panel minimal sweep (default: 1000000).")
     parser.add_argument("--x-max", type=float, default=5.0,
                         help="Maximum linear risk displayed on x (default: 5).")
+    parser.add_argument("--shock-color-floor", type=float, default=0.30,
+                        help="RGB baseline for no-shock points; 0 is black and 1 is white (default: 0.30).")
     parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args()
     if args.users <= 0:
@@ -243,6 +305,8 @@ def parse_args() -> argparse.Namespace:
         raise SystemExit("--individual-paths must be non-negative.")
     if args.max_hardware_budget < 0:
         raise SystemExit("--max-hardware-budget must be non-negative.")
+    if not 0.0 <= args.shock_color_floor <= 1.0:
+        raise SystemExit("--shock-color-floor must be between 0 and 1.")
     if args.output is None:
         args.output = args.simulation_dir / f"simulation_and_frontier_{args.users}_{args.company_profile}.png"
     return args
@@ -253,7 +317,7 @@ def main() -> None:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     render(
         args.output, args.users, args.company_profile, args.x_max,
-        args.individual_paths, args.max_hardware_budget,
+        args.individual_paths, args.max_hardware_budget, args.shock_color_floor,
     )
     print(f"Wrote {args.output}")
 

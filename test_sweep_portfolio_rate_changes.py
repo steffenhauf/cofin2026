@@ -19,10 +19,12 @@ from sweep_portfolio_rate_changes import (
     hardware_budget_time_sensitivity_records,
     hardware_selection_for_budget,
     paired_future_return_rates,
+    final_shock_frontier_return_rates,
     period_frontier_return_rates,
     select_portfolios,
     _apply_frontier_x_limits,
     write_pareto_markdown_table,
+    write_final_shock_frontier_return_rates,
     write_period_frontier_return_rates,
     write_wide_csvs,
 )
@@ -346,6 +348,39 @@ def test_period_frontier_return_rates_fan_out_by_access_plan(tmp_path):
     ]
     assert all("access_plan_" in path.name for path in outputs)
     assert all(pd.read_csv(path).shape == (1, 5) for path in outputs)
+
+
+def test_final_shock_frontier_return_rates_have_48_final_horizon_columns(tmp_path):
+    rows = []
+    for run in (0, 1):
+        for asset, reward in enumerate((0.2, 0.4, 0.7)):
+            for period, month in ((0, 0), (1, 3)):
+                rows.append(
+                    {
+                        "model": f"model_{asset}", "token_cost": "flat", "access_plan": "pay_per_use",
+                        "hardware": "cloud_api_only", "hardware_refresh": "maxed_out",
+                        "local_fallback": "persona_choice", "service_provider": "global_service",
+                        "shock_combination": "none", "run": run, "period": period, "month": month,
+                        "annualized_return_rate": reward + run * 0.1 + period * 0.05 if run == 0 else float("nan"),
+                        "return_rate": reward + run * 0.1 + period * 0.05 if run == 0 else float("nan"),
+                        "mean_efficiency_gain": reward, "zero_risk_efficiency_gain": 0.0,
+                        "embargo_shock": run == 1, "sudden_break_even_shock": False,
+                        "gradual_break_even_shock": False, "capability_plateau_shock": False,
+                    }
+                )
+    results = pd.DataFrame(rows)
+    rates = final_shock_frontier_return_rates(results)
+    assert rates.shape == (2, 50)
+    assert rates.columns[2] == "low_risk_plateau_no_price_gradual_no_price_abrupt_no_embargo_no"
+    assert rates.columns[-1] == "high_risk_plateau_yes_price_gradual_yes_price_abrupt_yes_embargo_yes"
+    assert rates.iloc[:, 2:5].notna().all().all()
+    assert rates.iloc[:, 5:].isna().all().all()
+
+    outputs = write_final_shock_frontier_return_rates(
+        results, SweepScenario(50, 10.0, 50_000.0, 0.25, False), tmp_path
+    )
+    assert len(outputs) == 1
+    assert pd.read_csv(outputs[0]).equals(rates)
 
 
 def test_hardware_budget_sensitivity_records_keep_final_period_risk_bands():

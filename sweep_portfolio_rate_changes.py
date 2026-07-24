@@ -48,6 +48,12 @@ HARDWARE_BUDGETS_USD = (0.0, 10_000.0, 50_000.0, 100_000.0, 500_000.0, 1_000_000
 CONFIDENTIAL_SHARES = (0.0, 0.1, 0.25, 0.5, 0.9)
 PORTFOLIOS = ("low_risk", "optimum", "high_gain")
 PERIOD_FRONTIER_PORTFOLIOS = ("low_risk", "medium_risk", "high_risk")
+FINAL_SHOCK_COLUMNS = (
+    ("plateau", "capability_plateau_shock"),
+    ("price_gradual", "gradual_break_even_shock"),
+    ("price_abrupt", "sudden_break_even_shock"),
+    ("embargo", "embargo_shock"),
+)
 SERVICE_SLEEVES = {
     "global_service": "global_cloud",
     "european_service": "eu_cloud",
@@ -522,6 +528,91 @@ def write_period_frontier_return_rates(
         rates = period_frontier_return_rates(summary, access_plan)
         if rates.empty:
             continue
+        folder = base_folder / (f"access_plan_{access_plan}" if access_plan else "")
+        filename = (
+            f"users_{users}_max_hardware_invest_usd_{hardware}_"
+            f"confidential_document_fraction_{confidential}_service_usd_{service}_"
+            f"plateau_{str(scenario.plateau).lower()}"
+            f"{f'_access_plan_{access_plan}' if access_plan else ''}.csv"
+        )
+        folder.mkdir(parents=True, exist_ok=True)
+        output_path = folder / filename
+        rates.to_csv(output_path, index=False)
+        outputs.append(output_path)
+    return outputs
+
+
+def final_shock_frontier_return_rates(results: pd.DataFrame, access_plan: str | None = None) -> pd.DataFrame:
+    """Return full histories for final-horizon selections in every realized shock state."""
+    final_period = results["period"].max()
+    run_flags = (
+        results.groupby([*ASSET_IDENTITY_COLUMNS, "run"], sort=False)[[column for _, column in FINAL_SHOCK_COLUMNS]]
+        .max()
+        .reset_index()
+    )
+    final = results[results["period"] == final_period].drop(columns=[column for _, column in FINAL_SHOCK_COLUMNS]).merge(
+        run_flags, on=[*ASSET_IDENTITY_COLUMNS, "run"], how="inner"
+    )
+    if access_plan is not None:
+        final = final[final["access_plan"] == access_plan]
+
+    summary = return_change_summary(results)
+    histories = []
+    columns = []
+    for state in np.ndindex(*(2 for _ in FINAL_SHOCK_COLUMNS)):
+        state_label = "_".join(f"{name}_{'yes' if enabled else 'no'}" for (name, _), enabled in zip(FINAL_SHOCK_COLUMNS, state))
+        subset = final.copy()
+        for (_, column), enabled in zip(FINAL_SHOCK_COLUMNS, state):
+            subset = subset[subset[column].astype(bool) == bool(enabled)]
+        selected = period_frontier_selections(
+            subset.groupby([*ASSET_IDENTITY_COLUMNS, "period", "month"], sort=False)
+            .agg(
+                annualized_return_rate_risk_stddev=("annualized_return_rate", "std"),
+                median_annualized_return_rate=("annualized_return_rate", "median"),
+            )
+            .reset_index()
+            .fillna({"annualized_return_rate_risk_stddev": 0.0})
+        ) if not subset.empty else pd.DataFrame()
+        for portfolio in PERIOD_FRONTIER_PORTFOLIOS:
+            column = f"{portfolio}_{state_label}"
+            columns.append(column)
+            if selected.empty:
+                continue
+            match = selected[selected["portfolio"] == portfolio]
+            if match.empty:
+                continue
+            history = summary.merge(match.iloc[[0]][ASSET_IDENTITY_COLUMNS], on=ASSET_IDENTITY_COLUMNS, how="inner")
+            history["column_label"] = column
+            histories.append(history)
+    if not histories:
+        return pd.DataFrame(columns=["period", "month", *columns])
+    wide = pd.concat(histories, ignore_index=True).pivot(
+        index=["period", "month"], columns="column_label", values="median_annualized_return_rate"
+    ).reset_index()
+    return wide.reindex(columns=["period", "month", *columns])
+
+
+def write_final_shock_frontier_return_rates(
+    results: pd.DataFrame,
+    scenario: SweepScenario,
+    output_dir: Path,
+) -> list[Path]:
+    """Write one final-horizon, shock-split frontier CSV per access plan."""
+    access_plans = sorted(results["access_plan"].dropna().unique()) if "access_plan" in results else [None]
+    outputs = []
+    users = _configuration_path_value(scenario.users)
+    hardware = _configuration_path_value(scenario.hardware_budget_usd)
+    confidential = _configuration_path_value(scenario.confidential_share)
+    service = _configuration_path_value(scenario.service_budget_per_person_usd)
+    base_folder = (
+        output_dir
+        / "final_shock_frontier_return_rates"
+        / f"users_{users}"
+        / f"max_hardware_invest_usd_{hardware}"
+        / f"confidential_document_fraction_{confidential}"
+    )
+    for access_plan in access_plans:
+        rates = final_shock_frontier_return_rates(results, access_plan)
         folder = base_folder / (f"access_plan_{access_plan}" if access_plan else "")
         filename = (
             f"users_{users}_max_hardware_invest_usd_{hardware}_"
@@ -1649,6 +1740,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Replace deterministic token-cost and plateau scenarios with persistent stochastic shock combinations.",
     )
+    parser.add_argument(
+        "--legacy-period-frontier-return-rates",
+        action="store_true",
+        help="Write the previous full-horizon period-frontier CSVs instead of final-horizon shock-split CSVs.",
+    )
     parser.add_argument("--sudden-break-even-probability-per-month", type=float, default=SIMULATION_DEFAULTS["sudden_break_even_probability_per_month"])
     parser.add_argument("--gradual-break-even-probability-per-month", type=float, default=SIMULATION_DEFAULTS["gradual_break_even_probability_per_month"])
     parser.add_argument("--capability-plateau-probability-per-month", type=float, default=SIMULATION_DEFAULTS["capability_plateau_probability_per_month"])
@@ -1756,7 +1852,10 @@ def run_company_profile(
             scenario = futures[future]
             results, metadata = future.result()
             summary = return_change_summary(results)
-            write_period_frontier_return_rates(summary, scenario, output_dir)
+            if args.legacy_period_frontier_return_rates:
+                write_period_frontier_return_rates(summary, scenario, output_dir)
+            else:
+                write_final_shock_frontier_return_rates(results, scenario, output_dir)
             hardware_sensitivity_frames.append(hardware_budget_sensitivity_records(summary, scenario, name))
             hardware_time_sensitivity_frames.append(hardware_budget_time_sensitivity_records(summary, scenario, name))
             selected = select_portfolios(summary, scenario, metadata)
