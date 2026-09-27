@@ -95,7 +95,7 @@ be the quarterly capability-growth factor. For each enabled persistent shock
 $$
 p_k^{(\Delta)}=1-(1-p_k^{\text{month}})^\Delta,
 \qquad
-S_{k,j}=S_{k,j-1}\lor\operatorname{Bernoulli}
+S_{k,j}=S_{k,j-1}\lor\mathrm{Bernoulli}
 \!\left(p_k^{(\Delta)}\right).
 $$
 
@@ -135,16 +135,16 @@ Employee adoption, requested usage, allocation, and improvement are
 
 $$
 \begin{aligned}
-A_{i,j} &\sim \operatorname{Bernoulli}\!\left(
-  \operatorname{clip}\!\left(a_i[1+\varepsilon(C_j-1)],.02,.98\right)
+A_{i,j} &\sim \mathrm{Bernoulli}\!\left(
+  \mathrm{clip}\!\left(a_i[1+\varepsilon(C_j-1)],.02,.98\right)
   \right)\,\mathbf 1_{\{i\text{ participates}\}},\\
 R_{i,j} &= u_iA_{i,j},\\
-D_{i,j} &= \operatorname{Allocate}\!\left(
+D_{i,j} &= \mathrm{Allocate}\!\left(
   R_{i,j};\text{access, provider, local fallback, capacity, budget,
   confidentiality}\right),\\
-P_{i,j} &= \operatorname{clip}\!\left(
+P_{i,j} &= \mathrm{clip}\!\left(
   p_0+\beta C^*_{i,j}f_i,p_{\min},p_{\max}\right),\\
-I_{i,j} &\sim \operatorname{Bernoulli}(P_{i,j}).
+I_{i,j} &\sim \mathrm{Bernoulli}(P_{i,j}).
 \end{aligned}
 $$
 
@@ -160,7 +160,7 @@ Y_{i,j} &\sim \mathcal N\!\left(
   \mu_i\frac{\Delta}{12}C^*_{i,j}hf_i,
   \sigma_i\frac{\Delta}{12}\right),\\
 G^{AI}_{i,j} &=
-  \operatorname{clip}\!\left(
+  \mathrm{clip}\!\left(
     m_iY_{i,j},g_{\min}\frac{\Delta}{12},
     g_{\max}\frac{\Delta}{12}\right)
   A_{i,j}I_{i,j}\frac{D_{i,j}}{R_{i,j}}c_{i,j}d_j.
@@ -195,7 +195,7 @@ $$
 \bar G_{r,j}&=U^{-1}\sum_iG_{r,i,j},\\
 \rho_{r,j}&=\frac{\bar G_{r,j}}{X_{r,j}/U},\\
 \rho^{\mathrm{ann}}_{r,j}&=\frac{12}{\Delta}\rho_{r,j},\\
-s_{r,j}&=\operatorname{SD}\!\left(
+s_{r,j}&=\mathrm{SD}\!\left(
   \{\rho_{r,k}:0\leq k\leq j,\ \rho_{r,k}\text{ finite}\}\right),\\
 s^{\mathrm{ann}}_{r,j}&=\frac{12}{\Delta}s_{r,j}.
 \end{aligned}

@@ -806,8 +806,7 @@ stateDiagram-v2
     end note
 
     NoBenefit --> [*]: cost may apply; AI gain = 0
-    Benefit --> [*]: sample gain (may be negative); scale by capability,
-      work-type fit and delivered usage
+    Benefit --> [*]: sample gain can be negative and is scaled by capability, work-type fit, and delivered usage
 ```
 
 ## Implementation Notes
