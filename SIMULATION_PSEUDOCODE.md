@@ -86,35 +86,35 @@ period length. Hardware CAPEX is amortized over 36 calendar months.
 
 ## Compact mathematical formulation
 
-For run \(r\), period \(j\), and employee \(i\), let
-\(\Delta\) be `resolution_months`, \(t_j=j\Delta\) be elapsed calendar months,
-\(U\) be the employee count, \(J\) be the number of periods, and \(q=1.085\)
+For run $r$, period $j$, and employee $i$, let
+$\Delta$ be `resolution_months`, $t_j=j\Delta$ be elapsed calendar months,
+$U$ be the employee count, $J$ be the number of periods, and $q=1.085$
 be the quarterly capability-growth factor. For each enabled persistent shock
-\(k\), the per-period trigger probability is
+$k$, the per-period trigger probability is
 
 $$
 p_k^{(\Delta)}=1-(1-p_k^{\text{month}})^\Delta,
 \qquad
 S_{k,j}=S_{k,j-1}\lor\mathrm{Bernoulli}
-\!\left(p_k^{(\Delta)}\right).
+\left(p_k^{(\Delta)}\right).
 $$
 
-The embargo indicator \(B_j\) is different: it is independently sampled each
+The embargo indicator $B_j$ is different: it is independently sampled each
 period for the global provider using the configured per-period probability.
 It is not persistent.
 
-With model lag \(l_m\), provider lag \(l_p\), embargo rollback \(l_b\), and
-plateau frontier position \(\pi_j\), capability is
+With model lag $l_m$, provider lag $l_p$, embargo rollback $l_b$, and plateau
+frontier position $\pi_j$, capability is
 
 $$
 \begin{aligned}
-e_j &= \max\!\left(0,\frac{t_j-l_m-l_p-B_jl_b}{3}\right),\\
+e_j &= \max\left(0,\frac{t_j-l_m-l_p-B_jl_b}{3}\right),\\
 e'_j &=
 \begin{cases}
 \min(e_j,\pi_j), & \text{deterministic or shock plateau active},\\
 e_j, & \text{otherwise},
 \end{cases}\\
-C_j &= \min\!\left(C_{\max},q^{e'_j}\right).
+C_j &= \min\left(C_{\max},q^{e'_j}\right).
 \end{aligned}
 $$
 
@@ -135,32 +135,32 @@ Employee adoption, requested usage, allocation, and improvement are
 
 $$
 \begin{aligned}
-A_{i,j} &\sim \mathrm{Bernoulli}\!\left(
-  \mathrm{clip}\!\left(a_i[1+\varepsilon(C_j-1)],.02,.98\right)
-  \right)\,\mathbf 1_{\{i\text{ participates}\}},\\
+A_{i,j} &\sim \mathrm{Bernoulli}\left(
+  \mathrm{clip}\left(a_i[1+\varepsilon(C_j-1)],.02,.98\right)
+  \right)\mathbf 1_{\{i\text{ participates}\}},\\
 R_{i,j} &= u_iA_{i,j},\\
-D_{i,j} &= \mathrm{Allocate}\!\left(
+D_{i,j} &= \mathrm{Allocate}\left(
   R_{i,j};\text{access, provider, local fallback, capacity, budget,
   confidentiality}\right),\\
-P_{i,j} &= \mathrm{clip}\!\left(
+P_{i,j} &= \mathrm{clip}\left(
   p_0+\beta C^*_{i,j}f_i,p_{\min},p_{\max}\right),\\
 I_{i,j} &\sim \mathrm{Bernoulli}(P_{i,j}).
 \end{aligned}
 $$
 
-Here \(C^*_{i,j}\) includes the selected local-model capability adjustment.
-If \(h\) is the hardware-refresh bonus, \(m_i\) is the persona/work-type gain
-moderation, \(c_{i,j}\) is the confidential-mixing penalty, and
-\(d_j=(1+g_s)^{-j\Delta/12}\) is the optional counterfactual skill-growth
+Here $C^*_{i,j}$ includes the selected local-model capability adjustment.
+If $h$ is the hardware-refresh bonus, $m_i$ is the persona/work-type gain
+moderation, $c_{i,j}$ is the confidential-mixing penalty, and
+$d_j=(1+g_s)^{-j\Delta/12}$ is the optional counterfactual skill-growth
 discount, the AI-attributed gain is
 
 $$
 \begin{aligned}
-Y_{i,j} &\sim \mathcal N\!\left(
+Y_{i,j} &\sim \mathcal N\left(
   \mu_i\frac{\Delta}{12}C^*_{i,j}hf_i,
   \sigma_i\frac{\Delta}{12}\right),\\
 G^{AI}_{i,j} &=
-  \mathrm{clip}\!\left(
+  \mathrm{clip}\left(
     m_iY_{i,j},g_{\min}\frac{\Delta}{12},
     g_{\max}\frac{\Delta}{12}\right)
   A_{i,j}I_{i,j}\frac{D_{i,j}}{R_{i,j}}c_{i,j}d_j.
@@ -182,21 +182,22 @@ G_{i,j}&=G^{AI}_{i,j}+G^0_{i,j}.
 \end{aligned}
 $$
 
-The effective confidential share \(c\) is either the configured organisation
+The effective confidential share $c$ is either the configured organisation
 share or the employee-mix-weighted task shares, capped at 0.90.
-`zero_risk_confidential_work_share` supplies \(z_{\mathrm{conf}}\) (0.20 by
+`zero_risk_confidential_work_share` supplies $z_{\mathrm{conf}}$ (0.20 by
 default).
 
-For total period cost \(X_{r,j}=X^{\mathrm{service}}_{r,j}+
-X^{\mathrm{hardware}}_{r,j}\), the recorded return measures are
+For total period cost
+$X_{r,j}=X^{\mathrm{service}}_{r,j}+X^{\mathrm{hardware}}_{r,j}$, the recorded
+return measures are
 
 $$
 \begin{aligned}
 \bar G_{r,j}&=U^{-1}\sum_iG_{r,i,j},\\
 \rho_{r,j}&=\frac{\bar G_{r,j}}{X_{r,j}/U},\\
 \rho^{\mathrm{ann}}_{r,j}&=\frac{12}{\Delta}\rho_{r,j},\\
-s_{r,j}&=\mathrm{SD}\!\left(
-  \{\rho_{r,k}:0\leq k\leq j,\ \rho_{r,k}\text{ finite}\}\right),\\
+s_{r,j}&=\mathrm{SD}\left(
+  \{\rho_{r,k}:0\leq k\leq j, \rho_{r,k}\text{ finite}\}\right),\\
 s^{\mathrm{ann}}_{r,j}&=\frac{12}{\Delta}s_{r,j}.
 \end{aligned}
 $$

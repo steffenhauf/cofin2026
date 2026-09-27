@@ -236,8 +236,8 @@ def value_cashflows(
             -(frame["period"] + 1) * period_years
         )
         frame["discounted_cashflow_eur"] = (
-            frame["cashflow_eur"] * frame["discount_factor"]
-        )
+            frame["gross_benefit_eur"] - frame["recurring_ai_investment_eur"]
+        ) * frame["discount_factor"] - frame["upfront_hardware_investment_eur"]
         frame["horizon_month"] = (
             frame["period"] + 1
         ) * config.resolution_months
