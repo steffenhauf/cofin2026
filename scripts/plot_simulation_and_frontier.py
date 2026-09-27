@@ -17,7 +17,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.lines import Line2D
-
 from simulate_llm_efficiency import SimulationConfig, _resolve_backend
 from sweep_portfolio_rate_changes import (
     ASSET_IDENTITY_COLUMNS, COMPANY_PROFILES, SweepScenario,

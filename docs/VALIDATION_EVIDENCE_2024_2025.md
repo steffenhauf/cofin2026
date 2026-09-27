@@ -47,7 +47,7 @@ increase in case resolution; it separately reports 90 minutes saved per week
 for its salespeople. [Microsoft WorkLab case report](https://www.microsoft.com/en-us/worklab/our-year-with-copilot-what-microsoft-has-learned-about-ai-at-work)
 
 Provision classification: Microsoft Copilot / cloud service. This is the
-numeric calibration anchor for `validation_config_2024.yaml`:
+numeric calibration anchor for `configs/validation_config_2024.yaml`:
 `administration.mean_gain: 0.12`, with all workers represented as the
 support/administration task. It is deliberately not used to assert a 12%
 gain for all Microsoft work or all firms.
@@ -77,8 +77,8 @@ not a claim about Orion Health’s headcount.
 Run the two annual cases separately:
 
 ```bash
-python simulate_llm_efficiency.py --config validation_config_2024.yaml --output-dir validation_2024
-python simulate_llm_efficiency.py --config validation_config_2025.yaml --output-dir validation_2025
+python scripts/simulate_llm_efficiency.py --config configs/validation_config_2024.yaml --output-dir validation_2024
+python scripts/simulate_llm_efficiency.py --config configs/validation_config_2025.yaml --output-dir validation_2025
 ```
 
 Each has `years: 1.0` and `resolution_months: 1`, yielding 12 monthly periods.
@@ -91,7 +91,7 @@ case, not an empirical claim about Klarna or Orion.
 For the focused out-of-sample comparison, run the local-only runner instead:
 
 ```bash
-python validate_published_gains.py --runs 200 --concurrency 4 --output-dir validation_outputs
+python scripts/validate_published_gains.py --runs 200 --concurrency 4 --output-dir validation_outputs
 ```
 
 It runs the evidence-matched administration, knowledge-work, bounded-engineering,
@@ -219,7 +219,7 @@ resolution-time measure directly with a firm-wide profit or headcount result.
 ### Comparative publications and operational case studies
 
 The first eight references below are the publications and case studies entered
-as comparators by `validate_published_gains.py`. They are listed in APA 7th
+as comparators by `scripts/validate_published_gains.py`. They are listed in APA 7th
 edition style. The operational case studies are vendor-reported and should not
 be interpreted as independent causal estimates.
 
@@ -290,6 +290,6 @@ acceptance of information technology: Toward a unified view. *MIS Quarterly,
   in foundation-model capability.
 - A validation run that needs local-model CAPEX should wait for a public case
   that discloses both a measurable work outcome and the local hardware or
-  contract cost. The supplied `hardware_benchmarks.csv` is suitable for a
+  contract cost. The supplied `configs/hardware_benchmarks.csv` is suitable for a
   sensitivity analysis, but it is not evidence that a selected company
   incurred that CAPEX.

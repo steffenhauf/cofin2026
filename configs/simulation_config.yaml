@@ -16,7 +16,7 @@ model:
     # the remainder receives onprem_capability_multiplier instead. It is a workload
     # composition assumption (unit: fraction [0,1]), not a benchmark score. The
     # project derives the larger-model premise from the Gemma model card; see
-    # HARDWARE_BENCHMARKS.md, “Model-quality adjustment”. Use task audits; vary 0-1.
+    # docs/HARDWARE_BENCHMARKS.md, “Model-quality adjustment”. Use task audits; vary 0-1.
     - {task: software_engineering, share: 0.36, mean_gain: 0.10, sigma: 0.060, capability_fit: 0.85, frontier_quality_work_share: 0.55} # 10%/yr; Paradis 2024 Table 2 ~21% time saving, Becker 2025 -19%; explore [-0.19,0.21]. Remaining unitless values illustrative [0,1].
     - {task: administration, share: 0.34, mean_gain: 0.17, sigma: 0.080, capability_fit: 1.00, frontier_quality_work_share: 0.70} # 17%/yr; Brynjolfsson 2023 Table 3 ~14%; explore [0,0.40]. Fits/shares are illustrative [0,1].
     - {task: creative_work, share: 0.10, mean_gain: 0.10, sigma: 0.120, capability_fit: 0.90, frontier_quality_work_share: 0.70} # 10%/yr illustrative; Noy & Zhang 2023 Results and Hou 2025 Results show heterogeneous effects; explore [-0.25,0.40].
@@ -61,12 +61,12 @@ model:
   hardware_scenarios:
     # capex_units is a relative upfront-CAPEX index used for compatibility with
     # older index-budget inputs. When a USD hardware budget is supplied, purchase
-    # costs from hardware_benchmarks.csv determine affordability instead. Unit:
+    # costs from configs/hardware_benchmarks.csv determine affordability instead. Unit:
     # index units (not GPUs, USD, or concurrent users); it scales the default USD
     # index calibration. Values come from the project hardware methodology; do not
     # compare them to market prices directly.
     cloud_api_only: {capacity: 0.0, utilization: 1.0, capex_units: 0.0} # capacity/utilization fractions [0,1], capex index; cloud reference.
-    onprem_10pct_capacity: {capacity: 0.10, utilization: 1.0, capex_units: 165.0} # capacity fraction; hardware table in HARDWARE_BENCHMARKS.md; explore 0-1.
+    onprem_10pct_capacity: {capacity: 0.10, utilization: 1.0, capex_units: 165.0} # capacity fraction; hardware table in docs/HARDWARE_BENCHMARKS.md; explore 0-1.
     onprem_50pct_capacity: {capacity: 0.50, utilization: 1.0, capex_units: 610.0} # same units/source/range.
     onprem_full_capacity: {capacity: 1.0, utilization: 1.0, capex_units: 1120.0} # same units/source/range.
     onprem_low_30pct_utilization: {capacity: 1.0, utilization: 0.30, capex_units: 1120.0} # utilization fraction; sensitivity range 0.1-1.
@@ -78,12 +78,12 @@ model:
     # not add throughput. Unitless; illustrative sensitivity range 1.0-1.2.
     maxed_out: {refresh_factor: 1.0, capability_bonus: 1.0} # unitless; fixed hardware; suggested 1.
     follow_each_generation: {refresh_factor: 1.45, capability_bonus: 1.08} # unitless illustrative sensitivity; suggested 1-1.5 and 1-1.2.
-  hardware_calibrations: # USD/unit and capability assumptions; project hardware table dated 2026-07-14, HARDWARE_BENCHMARKS.md.
+  hardware_calibrations: # USD/unit and capability assumptions; project hardware table dated 2026-07-14, docs/HARDWARE_BENCHMARKS.md.
     # frontier_quality_work_share_multiplier controls whether the task-specific
     # frontier_quality_work_share is eligible for frontier-level local capability.
     # 1 preserves that share; 0 makes all work use onprem_capability_multiplier.
     # Unitless fraction [0,1]. It is a model-quality sensitivity assumption based
-    # on the Gemma model-card discussion in HARDWARE_BENCHMARKS.md, not a measured
+    # on the Gemma model-card discussion in docs/HARDWARE_BENCHMARKS.md, not a measured
     # accuracy conversion; test 0 and 1 when local quality is uncertain.
     rtx6000-ada-gemma4-12b: {target_unit_usd: 8500.0, onprem_capability_multiplier: 0.88, frontier_quality_work_share_multiplier: 0.0, onprem_model_label: Gemma 4 12B local model} # USD, fractions [0,1]; update from vendor quote/benchmark.
     rtx6000-pro-gemma4-26b-moe: {target_unit_usd: 14500.0, onprem_capability_multiplier: 0.94, frontier_quality_work_share_multiplier: 0.5, onprem_model_label: Gemma 4 26B MoE local model} # same units/source.

@@ -1,13 +1,3 @@
-# Validation configuration: calendar year 2025, 12 monthly periods. It is a
-# deliberately narrow cloud-service validation case, not a portfolio sweep.
-# Calibration anchor: AWS’s Orion Health case study (2025) reports that its
-# Bedrock/RAG internal chatbot reclaimed about 50 support-staff hours per day;
-# it reports no team denominator, so the 10% gain below is deliberately
-# conservative and is not presented as a direct conversion of that outcome.
-# The same source identifies Amazon Bedrock, Lambda, DynamoDB, VPC and RAG,
-# and describes the deployment as cloud hosted. No local-model CAPEX is
-# disclosed, so this file keeps only cloud_api_only and zero local CAPEX.
-# Evidence note: VALIDATION_EVIDENCE_2024_2025.md.
 # All numeric inputs are deliberately editable scenario assumptions. References:
 # Rogers (2003), ch. 1; Brynjolfsson, Li & Raymond (2023), Table 3;
 # Noy & Zhang (2023), Results; Paradis et al. (2024), Table 2; Becker et al.
@@ -15,23 +5,23 @@
 # "Source Anchors". Values without a direct estimate are marked illustrative.
 model:
   personas: # Adoption archetypes; shares are fractions of employees [0,1]. Rogers (2003), ch. 7; suggested canonical split below.
-    - {persona: innovators, share: 0.025, adoption_mean: 0.93, usage_intensity: 1.35, wait_tolerance: 0.85, effort_expectancy_beta: 0.00, adaptability_index: 1.20} # Unitless moderation inputs; see simulation_config.yaml for calibration basis and ranges.
-    - {persona: early_adopters, share: 0.135, adoption_mean: 0.82, usage_intensity: 1.20, wait_tolerance: 0.72, effort_expectancy_beta: 0.15, adaptability_index: 0.10} # Unitless moderation inputs; see simulation_config.yaml for calibration basis and ranges.
-    - {persona: early_majority, share: 0.34, adoption_mean: 0.61, usage_intensity: 1.00, wait_tolerance: 0.55, effort_expectancy_beta: 0.375, adaptability_index: 0.00} # Unitless early-majority calibration reference; see simulation_config.yaml.
-    - {persona: late_majority, share: 0.34, adoption_mean: 0.38, usage_intensity: 0.78, wait_tolerance: 0.36, effort_expectancy_beta: 0.45, adaptability_index: -0.05} # Unitless illustrative moderation inputs; see simulation_config.yaml.
-    - {persona: laggards, share: 0.16, adoption_mean: 0.17, usage_intensity: 0.48, wait_tolerance: 0.18, effort_expectancy_beta: 0.45, adaptability_index: -0.10} # Unitless illustrative moderation inputs; see simulation_config.yaml.
+    - {persona: innovators, share: 0.025, adoption_mean: 0.93, usage_intensity: 1.35, wait_tolerance: 0.85, effort_expectancy_beta: 0.00, adaptability_index: 1.00} # Unitless moderation inputs. UTAUT experience moderates effort expectancy, but does not estimate productivity effects (Venkatesh et al. 2003, pp. 447-450); beta and index are calibration assumptions. Sensitivity beta 0-0.45, index 0-0.3.
+    - {persona: early_adopters, share: 0.135, adoption_mean: 0.82, usage_intensity: 1.20, wait_tolerance: 0.72, effort_expectancy_beta: 0.15, adaptability_index: 0.50} # Unitless moderation inputs; illustrative between innovators and the early-majority reference. UTAUT supports experience moderation, not these magnitudes; sensitivity beta 0-0.45, index 0-0.2.
+    - {persona: early_majority, share: 0.34, adoption_mean: 0.61, usage_intensity: 1.00, wait_tolerance: 0.55, effort_expectancy_beta: 0.375, adaptability_index: 0.00} # Unitless reference cohort. Beta is midpoint of the user-supplied 0.30-0.45 range; index 0 fixes the current gain calibration.
+    - {persona: late_majority, share: 0.34, adoption_mean: 0.38, usage_intensity: 0.78, wait_tolerance: 0.36, effort_expectancy_beta: 0.45, adaptability_index: -0.05} # Unitless illustrative sensitivity; vary beta 0.30-0.60 and index -0.2-0.
+    - {persona: laggards, share: 0.16, adoption_mean: 0.17, usage_intensity: 0.48, wait_tolerance: 0.18, effort_expectancy_beta: 0.45, adaptability_index: -0.10} # Unitless illustrative sensitivity; vary beta 0.30-0.60 and index -0.3-0.
   employee_types: # Work mix and annual paid-AI gain distribution; gains/sigma are fractions/year. See cited results above; suggested sensitivity spans the observed task-specific evidence.
     # frontier_quality_work_share is the share of this task that needs frontier-grade
     # model quality. For eligible local models it receives full frontier capability;
     # the remainder receives onprem_capability_multiplier instead. It is a workload
     # composition assumption (unit: fraction [0,1]), not a benchmark score. The
     # project derives the larger-model premise from the Gemma model card; see
-    # HARDWARE_BENCHMARKS.md, “Model-quality adjustment”. Use task audits; vary 0-1.
-    - {task: software_engineering, share: 0.0, mean_gain: 0.10, sigma: 0.060, capability_fit: 0.85, frontier_quality_work_share: 0.55} # Excluded from this support-work validation.
-    - {task: administration, share: 1.0, mean_gain: 0.10, sigma: 0.050, capability_fit: 1.00, frontier_quality_work_share: 0.70} # Conservative 10%/year inference from Orion’s reported 50 staff-hours/day; denominator is unpublished.
-    - {task: creative_work, share: 0.0, mean_gain: 0.10, sigma: 0.120, capability_fit: 0.90, frontier_quality_work_share: 0.70} # Excluded from this support-work validation.
-    - {task: manual_labor, share: 0.0, mean_gain: 0.020, sigma: 0.020, capability_fit: 0.25, frontier_quality_work_share: 0.15} # Excluded from this support-work validation.
-    - {task: knowledge_work, share: 0.0, mean_gain: 0.15, sigma: 0.090, capability_fit: 0.90, frontier_quality_work_share: 0.60} # Excluded from this support-work validation.
+    # docs/HARDWARE_BENCHMARKS.md, “Model-quality adjustment”. Use task audits; vary 0-1.
+    - {task: software_engineering, share: 0.36, mean_gain: 0.10, sigma: 0.060, capability_fit: 0.85, frontier_quality_work_share: 0.55} # 10%/yr; Paradis 2024 Table 2 ~21% time saving, Becker 2025 -19%; explore [-0.19,0.21]. Remaining unitless values illustrative [0,1].
+    - {task: administration, share: 0.34, mean_gain: 0.17, sigma: 0.080, capability_fit: 1.00, frontier_quality_work_share: 0.70} # 17%/yr; Brynjolfsson 2023 Table 3 ~14%; explore [0,0.40]. Fits/shares are illustrative [0,1].
+    - {task: creative_work, share: 0.10, mean_gain: 0.10, sigma: 0.120, capability_fit: 0.90, frontier_quality_work_share: 0.70} # 10%/yr illustrative; Noy & Zhang 2023 Results and Hou 2025 Results show heterogeneous effects; explore [-0.25,0.40].
+    - {task: manual_labor, share: 0.20, mean_gain: 0.020, sigma: 0.020, capability_fit: 0.25, frontier_quality_work_share: 0.15} # 2%/yr illustrative; task-fit range [0,1], sensitivity [0,0.10].
+    - {task: knowledge_work, share: 0.0, mean_gain: 0.15, sigma: 0.090, capability_fit: 0.90, frontier_quality_work_share: 0.60} # 15%/yr; Noy & Zhang 2023 Results reports large writing time savings; explore [0,0.40].
   # Multiplies only software_engineering.mean_gain; it does not change adoption,
   # cost, or the other work types. Thus bounded: 2 turns a 10%/year base gain
   # into 20%/year, while maintenance: -0.25 turns it into -2.5%/year. Unitless.
@@ -47,42 +37,53 @@ model:
     gradual_token_cost_increase: 0.85 # fractional total increase over horizon; scenario assumption; suggested 0-1.
     sudden_token_cost_multiplier: 1.85 # post-shock cost multiplier; scenario assumption; suggested 1-3.
   scenarios:
-    frontier_growth: {kind: frontier, growth: true, lag_months: 0} # Managed-cloud frontier reference; the only validation model path.
-  shock_scenarios: [] # scenario labels; no physical unit.
+    frontier_growth: {kind: frontier, growth: true, lag_months: 0} # lag in months; reference path, suggested 0.
+    frontier_plateau: {kind: frontier, growth: false, lag_months: 0} # lag in months; counterfactual plateau, suggested 0.
+    oss_growth_lagged: {kind: oss, growth: true, lag_months: 4} # months; Epoch AI (2026), open/closed ECI gap; suggested 0-12.
+    oss_plateau_lagged: {kind: oss, growth: false, lag_months: 4} # months; same source/range.
+  shock_scenarios: [sudden_break_even, gradual_break_even, capability_plateau] # scenario labels; no physical unit.
   service_providers:
     # confidential_capacity_share is the fraction of confidential requested work
     # that can be routed to this provider. The remainder must use the local fallback
     # or remains unserved; it is not a share of total provider capacity. Unit:
     # fraction [0,1]. This is a security/contract policy assumption, with no
     # universal literature value; set from the data-classification and DPA rules.
-    global_service: {capability_lag_months: 0, embargo_affected: true, confidential_capacity_share: 0.0} # lag months, eligibility fraction; illustrative; ranges 0-12 months, 0-1.
-    european_service: {capability_lag_months: 9, embargo_affected: false, confidential_capacity_share: 1.0} # lag months, eligibility fraction; illustrative; ranges 0-12, 0-1.
-    local_hardware: {capability_lag_months: 0, embargo_affected: false, confidential_capacity_share: 0.0} # lag months, eligibility fraction; illustrative; ranges 0-12, 0-1.
-    eu_cloud_oss: {capability_lag_months: 0, embargo_affected: false, confidential_capacity_share: 0.5} # lag months, eligibility fraction; illustrative; ranges 0-12, 0-1.
-  token_scenarios: {flat: flat} # Hold pricing constant: Orion does not publish Bedrock consumption prices.
+    global_service: {capability_lag_months: 0, embargo_affected: true, confidential_capacity_share: 0.1} # lag months, eligibility fraction; illustrative; ranges 0-12 months, 0-1.
+    european_service: {capability_lag_months: 9, embargo_affected: false, confidential_capacity_share: 0.25} # lag months, eligibility fraction; illustrative; ranges 0-12, 0-1.
+    local_hardware: {capability_lag_months: 4, embargo_affected: false, confidential_capacity_share: 1.0} # lag months, eligibility fraction; illustrative; ranges 0-12, 0-1.
+    eu_cloud_oss: {capability_lag_months: 4, embargo_affected: false, confidential_capacity_share: 0.5} # lag months, eligibility fraction; illustrative; ranges 0-12, 0-1.
+  token_scenarios: {flat: flat, gradual_break_even: gradual, sudden_break_even: sudden} # labels; scenario choices, not estimates.
   access_plans:
     pay_per_use: {subscription_cost_per_active_user_quarter: 0.0, five_hour_allowance: .inf, weekly_allowance: .inf, topup: false} # cost-index/user-quarter, allowance fraction; provider-contract inputs; use quoted prices/limits.
+    flatrate_limited: {subscription_cost_per_active_user_quarter: 0.78, five_hour_allowance: 0.82, weekly_allowance: 0.92, topup: false} # cost-index/user-quarter, fractions; illustrative; vary cost >=0 and fractions [0,1].
+    flatrate_limited_topup: {subscription_cost_per_active_user_quarter: 0.78, five_hour_allowance: 0.82, weekly_allowance: 0.92, topup: true} # same units/ranges; contract-specific.
   local_fallback_policies: [persona_choice, local_default] # policy labels; scenario choices.
   hardware_scenarios:
     # capex_units is a relative upfront-CAPEX index used for compatibility with
     # older index-budget inputs. When a USD hardware budget is supplied, purchase
-    # costs from hardware_benchmarks.csv determine affordability instead. Unit:
+    # costs from configs/hardware_benchmarks.csv determine affordability instead. Unit:
     # index units (not GPUs, USD, or concurrent users); it scales the default USD
     # index calibration. Values come from the project hardware methodology; do not
     # compare them to market prices directly.
     cloud_api_only: {capacity: 0.0, utilization: 1.0, capex_units: 0.0} # capacity/utilization fractions [0,1], capex index; cloud reference.
+    onprem_10pct_capacity: {capacity: 0.10, utilization: 1.0, capex_units: 165.0} # capacity fraction; hardware table in docs/HARDWARE_BENCHMARKS.md; explore 0-1.
+    onprem_50pct_capacity: {capacity: 0.50, utilization: 1.0, capex_units: 610.0} # same units/source/range.
+    onprem_full_capacity: {capacity: 1.0, utilization: 1.0, capex_units: 1120.0} # same units/source/range.
+    onprem_low_30pct_utilization: {capacity: 1.0, utilization: 0.30, capex_units: 1120.0} # utilization fraction; sensitivity range 0.1-1.
+    cloud_oss: {capacity: 1.0, utilization: 1.0, capex_units: 0.0} # fractions/index; cloud reference.
   hardware_refresh:
     # capability_bonus multiplies effective local capability after hardware capacity
     # has been funded. At 1.08, a fully funded refreshed system receives an 8%
     # quality uplift; an underfunded system receives a proportional uplift. It does
     # not add throughput. Unitless; illustrative sensitivity range 1.0-1.2.
     maxed_out: {refresh_factor: 1.0, capability_bonus: 1.0} # unitless; fixed hardware; suggested 1.
-  hardware_calibrations: # USD/unit and capability assumptions; project hardware table dated 2026-07-14, HARDWARE_BENCHMARKS.md.
+    follow_each_generation: {refresh_factor: 1.45, capability_bonus: 1.08} # unitless illustrative sensitivity; suggested 1-1.5 and 1-1.2.
+  hardware_calibrations: # USD/unit and capability assumptions; project hardware table dated 2026-07-14, docs/HARDWARE_BENCHMARKS.md.
     # frontier_quality_work_share_multiplier controls whether the task-specific
     # frontier_quality_work_share is eligible for frontier-level local capability.
     # 1 preserves that share; 0 makes all work use onprem_capability_multiplier.
     # Unitless fraction [0,1]. It is a model-quality sensitivity assumption based
-    # on the Gemma model-card discussion in HARDWARE_BENCHMARKS.md, not a measured
+    # on the Gemma model-card discussion in docs/HARDWARE_BENCHMARKS.md, not a measured
     # accuracy conversion; test 0 and 1 when local quality is uncertain.
     rtx6000-ada-gemma4-12b: {target_unit_usd: 8500.0, onprem_capability_multiplier: 0.88, frontier_quality_work_share_multiplier: 0.0, onprem_model_label: Gemma 4 12B local model} # USD, fractions [0,1]; update from vendor quote/benchmark.
     rtx6000-pro-gemma4-26b-moe: {target_unit_usd: 14500.0, onprem_capability_multiplier: 0.94, frontier_quality_work_share_multiplier: 1.0, onprem_model_label: Gemma 4 26B MoE local model} # same units/source.
@@ -97,12 +98,12 @@ costs:
   it_employer_cost_factor: 1.25 # unitless payroll uplift; illustrative; sensitivity 1.15-1.35.
   it_support_fte: 0.5 # FTE; illustrative small-company support; sensitivity 0-1 FTE.
 simulation:
-  users: 500 # employees; existing validation bracket for a mid-sized support organization; not a claim of Orion headcount.
-  years: 1.0 # years; January–December 2025.
-  resolution_months: 1 # months/period; gives 12 monthly periods.
+  users: 500 # employees; sample size, not an estimate; use organisation headcount.
+  years: 3.0 # years; planning horizon; sensitivity 1-5.
+  resolution_months: 3 # months/period; quarterly reporting; suggested 1-3.
   runs: 1000 # Monte-Carlo runs; numerical precision, not literature; use >=100, preferably >=1000.
-  seed: 2025 # integer PRNG seed; reproducibility only.
-  plateau_quarter: 12 # monthly periods; no within-year plateau assumed for this validation.
+  seed: 20260703 # integer PRNG seed; reproducibility only.
+  plateau_quarter: 5 # 3-month periods; illustrative capability plateau at 15 months; sensitivity 0-20.
   base_cost_index_per_active_user_quarter: 1.0 # cost-index/(active user quarter); normalization; use 1.
   confidential_document_fraction: 0.0 # fraction [0,1]; organisation data; suggested observed share.
   zero_risk_confidential_work_share: 0.20 # fraction [0,1]; illustrative eligibility; sensitivity 0-1.
@@ -111,10 +112,10 @@ simulation:
   engineering_context: mixed # context label; see Paradis 2024 Table 2 and Becker 2025 abstract.
   adoption_propensity_concentration: 24.0 # beta concentration (unitless); illustrative; sensitivity 5-100.
   adoption_capability_elasticity: 0.16 # probability per capability-index unit; illustrative; sensitivity 0-0.5.
-  effort_expectancy_friction: 0.20 # Unitless interface/effort friction [0,1]; UTAUT experience moderation scenario; sensitivity 0-0.5.
-  adaptability_productivity_beta: 0.599 # Unitless standardized coefficient from user-supplied evidence; sensitivity 0.177-0.599.
-  early_majority_effort_expectancy_beta: 0.375 # Unitless calibration anchor; midpoint of beta 0.30-0.45.
-  early_majority_adaptability_index: 0.0 # Unitless calibration anchor; preserves early-majority output.
+  effort_expectancy_friction: 0.20 # Unitless interface/effort friction [0,1]. UTAUT treats effort expectancy as a determinant moderated by experience (Venkatesh et al. 2003, pp. 447-450), but gives no universal friction rate; illustrative, sensitivity 0-0.5.
+  adaptability_productivity_beta: 0.599 # Standardized unitless adaptability-to-productivity coefficient from the user-supplied corporate-adoption evidence; not a universal causal multiplier. Sensitivity 0.177-0.599.
+  early_majority_effort_expectancy_beta: 0.375 # Unitless calibration anchor: midpoint of the user-supplied early-majority beta range 0.30-0.45. It normalizes this cohort's moderation to 1.
+  early_majority_adaptability_index: 0.0 # Unitless calibration anchor; fixes the early-majority adaptability term to 1 and preserves its prior output.
   improvement_base_probability: 0.42 # probability [0,1]; illustrative; Dell'Acqua 2023 motivates heterogeneity; sensitivity 0.1-0.8.
   improvement_capability_weight: 0.20 # probability per capability-fit unit; illustrative; sensitivity 0-0.5.
   improvement_probability_min: 0.05 # probability [0,1]; clipping prior; sensitivity 0-0.2.
@@ -137,12 +138,13 @@ simulation:
   confidential_mixing_penalty: 0.5 # fractional gain penalty [0,1]; illustrative; sensitivity 0-1.
   it_support_max_users: 50 # employees; project IT-cost threshold; sensitivity 0-250.
 sweeps:
-  budget_frontier: {users: 500, years: 3.0, resolution_months: 3, runs: 200, concurrency: 4, simulation_concurrency: 1, seed: 20260707, plateau_quarter: 5, service_budget_min_usd: 0.0, service_budget_points: 5, hardware_budget_min_usd: 0.0, hardware_budget_points: 5} # units employees/years/months/runs/workers/USD/points; design settings, use budget-study requirements.
+  budget_frontier: {users: 500, years: 3.0, resolution_months: 1, runs: 200, concurrency: 4, simulation_concurrency: 1, seed: 20260707, plateau_quarter: 5, service_budget_min_usd: 0.0, service_budget_points: 5, hardware_budget_min_usd: 0.0, hardware_budget_points: 5} # units employees/years/months/runs/workers/USD/points; design settings, use budget-study requirements.
   portfolio:
     years: 3.0 # years; sweep horizon; suggested 1-5.
-    resolution_months: 3 # months/period; suggested 1-3.
+    resolution_months: 1 # months/period; suggested 1-3.
     runs: 100 # Monte-Carlo runs; numerical precision; use >=100.
     concurrency: 4 # worker processes; execution setting, use available cores.
+    pareto_min_incremental_efficiency_gain: 0.0 # fraction/period; required median gain above the zero-cost existing-tools baseline; use >0 for a stricter hurdle.
     seed: 20260711 # integer PRNG seed; reproducibility only.
     headcounts: [5,25,50,100,500,2500] # employees; sensitivity grid, use target organizations.
     service_budgets_usd: [5.0,10.0,25.0,50.0] # USD/(employee month); contract sensitivity grid, use quotes.
@@ -150,7 +152,7 @@ sweeps:
     confidential_shares: [0.0,0.1,0.25,0.5,0.9] # fraction [0,1]; data/sensitivity grid.
     company_profiles: # Employee-share fractions; illustrative compositions, each must sum to 1.
       administration_heavy: {software_engineering: 0.05, administration: 0.70, manual_labor: 0.10, knowledge_work: 0.15, creative_work: 0.0} # fractions; organizational data preferred.
-      mixed: {software_engineering: 0.25, administration: 0.35, manual_labor: 0.20, knowledge_work: 0.20, creative_work: 0.10} # fractions; original baseline; normalize before use with organization data.
+      mixed: {software_engineering: 0.25, administration: 0.25, manual_labor: 0.20, knowledge_work: 0.20, creative_work: 0.10} # fractions; illustrative mixed profile; replace with organization data.
       manual_labor_heavy: {software_engineering: 0.05, administration: 0.15, manual_labor: 0.70, knowledge_work: 0.10, creative_work: 0.0} # fractions; organizational data preferred.
       software_engineering_heavy: {software_engineering: 0.75, administration: 0.10, manual_labor: 0.05, knowledge_work: 0.10, creative_work: 0.0} # fractions; organizational data preferred.
       knowledge_worker_heavy: {software_engineering: 0.10, administration: 0.20, manual_labor: 0.05, knowledge_work: 0.65, creative_work: 0.0} # fractions; organizational data preferred.

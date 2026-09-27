@@ -21,6 +21,6 @@ export OPENBLAS_NUM_THREADS=1
 export MPLCONFIGDIR="${TMPDIR:-/tmp}/cofin-mpl-merge-${SLURM_JOB_ID}"
 mkdir -p "$MPLCONFIGDIR"
 
-"$PYTHON_BIN" sweep_portfolio_rate_changes.py \
+"$PYTHON_BIN" scripts/sweep_portfolio_rate_changes.py \
     --replot-only \
     --output-dir "$OUTPUT_DIR" --stochastic-shocks

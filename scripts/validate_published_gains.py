@@ -21,12 +21,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib.lines import Line2D
-
 import simulate_llm_efficiency as simulation
+from matplotlib.lines import Line2D
 from simulate_llm_efficiency import (
-    SIMULATION_DEFAULTS, SimulationConfig, _hardware_calibration_profile,
-    _resolve_backend, load_simulation_configuration, run_simulation)
+    CONFIG_DIR, SIMULATION_DEFAULTS, SimulationConfig,
+    _hardware_calibration_profile, _resolve_backend,
+    load_simulation_configuration, run_simulation)
 
 PROFILES = {
     "administration_heavy": {
@@ -316,7 +316,7 @@ def run_case(
     adoption_scenario: dict[str, object],
     args: argparse.Namespace,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    config_path = Path(f"validation_config_{case['year']}.yaml")
+    config_path = CONFIG_DIR / f"validation_config_{case['year']}.yaml"
     config = build_config(
         config_path,
         PROFILES[str(case["profile"])],

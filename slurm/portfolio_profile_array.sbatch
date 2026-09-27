@@ -39,7 +39,7 @@ mkdir -p "$MPLCONFIGDIR"
 
 # If the cluster needs an environment activation, set PYTHON_BIN or activate it
 # in the sbatch command before submission.
-"$PYTHON_BIN" sweep_portfolio_rate_changes.py \
+"$PYTHON_BIN" scripts/sweep_portfolio_rate_changes.py \
     --company-profiles "$profile" \
     --concurrency "$SLURM_CPUS_PER_TASK" \
     --backend "$BACKEND" \

@@ -269,7 +269,9 @@ HARDWARE_CALIBRATIONS = {
         "onprem_model_label": "Gemma 4 31B local model",
     },
 }
-HARDWARE_BENCHMARKS_PATH = Path(__file__).with_name("hardware_benchmarks.csv")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+CONFIG_DIR = PROJECT_ROOT / "configs"
+HARDWARE_BENCHMARKS_PATH = CONFIG_DIR / "hardware_benchmarks.csv"
 _HARDWARE_BENCHMARKS: pd.DataFrame | None = None
 USD_PER_HARDWARE_CAPEX_INDEX_DEFAULT = (
     HARDWARE_CALIBRATIONS["h100-gemma4-31b"]["target_unit_usd"]
@@ -288,7 +290,7 @@ IT_SUPPORT_MONTHLY_COST_EUR = (
     TVOD_E12_STEP3_MONTHLY_GROSS_EUR * IT_EMPLOYER_COST_FACTOR * IT_SUPPORT_FTE
 )
 
-DEFAULT_CONFIG_PATH = Path(__file__).with_name("simulation_config.yaml")
+DEFAULT_CONFIG_PATH = CONFIG_DIR / "simulation_config.yaml"
 SIMULATION_DEFAULTS: dict[str, object] = {}
 SWEEP_DEFAULTS: dict[str, dict[str, object]] = {}
 
@@ -3357,7 +3359,7 @@ def parse_args() -> argparse.Namespace:
         "--config",
         type=Path,
         default=config_path,
-        help="YAML configuration file (default: simulation_config.yaml).",
+        help="YAML configuration file (default: configs/simulation_config.yaml).",
     )
     parser.add_argument(
         "--users", type=int, default=SIMULATION_DEFAULTS["users"]

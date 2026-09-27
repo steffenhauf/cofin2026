@@ -1,3 +1,7 @@
 *.out
 *.err
 portfolio_sweep*
+
+# Python bytecode and cache directories
+__pycache__/
+*.py[cod]

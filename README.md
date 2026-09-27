@@ -4,7 +4,12 @@ Toy Monte Carlo simulation for time-dependent LLM efficiency return-rate curves.
 
 The model simulates 500 users by default over 3 years at quarterly resolution. It assigns each user to one of five adopter personas, simulates LLM adoption and realized productivity gain, applies model capability and cost scenarios, and then fits efficient return-rate curves to the simulated data.
 
-All simulation inputs and sweep grids are in [`simulation_config.yaml`](simulation_config.yaml). Each executable accepts `--config PATH` to use a different YAML file, for example `python simulate_llm_efficiency.py --config my_scenario.yaml` or `python sweep_portfolio_rate_changes.py --config my_scenario.yaml`. The file comments give units, source anchors, and suggested sensitivity ranges.
+All simulation inputs and sweep grids are in
+[`configs/simulation_config.yaml`](configs/simulation_config.yaml). Each
+executable accepts `--config PATH` to use a different YAML file, for example
+`python scripts/simulate_llm_efficiency.py --config configs/my_scenario.yaml`
+or `python scripts/sweep_portfolio_rate_changes.py --config configs/my_scenario.yaml`.
+The file comments give units, source anchors, and suggested sensitivity ranges.
 
 ## Installation
 
@@ -46,13 +51,13 @@ and Slurm operations.
 ## Run
 
 ```bash
-python simulate_llm_efficiency.py
+python scripts/simulate_llm_efficiency.py
 ```
 
 Useful options:
 
 ```bash
-python simulate_llm_efficiency.py \
+python scripts/simulate_llm_efficiency.py \
   --users 500 \
   --years 3 \
   --resolution-months 3 \
@@ -69,13 +74,13 @@ python simulate_llm_efficiency.py \
 Optional explicit backends:
 
 ```bash
-python simulate_llm_efficiency.py \
+python scripts/simulate_llm_efficiency.py \
   --backend numba \
   --runs 1000
 ```
 
 ```bash
-python simulate_llm_efficiency.py \
+python scripts/simulate_llm_efficiency.py \
   --backend torch-mps \
   --runs 1000
 ```
@@ -83,7 +88,7 @@ python simulate_llm_efficiency.py \
 Stochastic break-even and capability-shock mode:
 
 ```bash
-python simulate_llm_efficiency.py \
+python scripts/simulate_llm_efficiency.py \
   --stochastic-shocks \
   --sudden-break-even-probability-per-month 0.01 \
   --gradual-break-even-probability-per-month 0.01 \
@@ -107,7 +112,7 @@ rows remain separated by enabled shock combination.
 Budget sweep wrapper:
 
 ```bash
-python sweep_budget_frontier.py \
+python scripts/sweep_budget_frontier.py \
   --years 3 \
   --runs 200 \
   --backend auto \
@@ -125,7 +130,7 @@ python sweep_budget_frontier.py \
 Replot existing sweep outputs without resimulating:
 
 ```bash
-python sweep_budget_frontier.py \
+python scripts/sweep_budget_frontier.py \
   --replot-only \
   --output-dir budget_sweep_outputs
 ```
@@ -133,26 +138,26 @@ python sweep_budget_frontier.py \
 Render the README to PDF with Mermaid support:
 
 ```bash
-python render_readme_pdf.py --output README.pdf
+python scripts/render_readme_pdf.py --output README.pdf
 ```
 
 For wide Mermaid diagrams, the most useful options are:
 
 ```bash
-python render_readme_pdf.py --output README.pdf --landscape --diagram-scale 0.9
+python scripts/render_readme_pdf.py --output README.pdf --landscape --diagram-scale 0.9
 ```
 
 Render a concise explanation of one simulation period and the persona effects
 as a PNG:
 
 ```bash
-python render_simulation_step_diagram.py --output simulation_step_and_persona.png
+python scripts/render_simulation_step_diagram.py --output simulation_step_and_persona.png
 ```
 
 Render English and German input and static-persona-Markov variants together:
 
 ```bash
-python render_simulation_step_diagram.py --all-variants --output-dir simulation_diagrams
+python scripts/render_simulation_step_diagram.py --all-variants --output-dir simulation_diagrams
 ```
 
 Outputs are written to `outputs/`:
@@ -184,7 +189,7 @@ The budget sweep wrapper writes:
 Portfolio return-rate-change sweep:
 
 ```bash
-python sweep_portfolio_rate_changes.py \
+python scripts/sweep_portfolio_rate_changes.py \
   --years 3 \
   --resolution-months 3 \
   --runs 100 \
@@ -196,7 +201,7 @@ python sweep_portfolio_rate_changes.py \
 The same stochastic mode is available on the portfolio sweep:
 
 ```bash
-python sweep_portfolio_rate_changes.py \
+python scripts/sweep_portfolio_rate_changes.py \
   --stochastic-shocks \
   --sudden-break-even-probability-per-month 0.01 \
   --gradual-break-even-probability-per-month 0.01 \
@@ -252,7 +257,7 @@ preserves common simulated uncertainty across the selected assets.
 Create an interactive Excel mean-variance workbook from a completed sweep:
 
 ```bash
-python create_welch_portfolio_workbook.py portfolio_sweep_slurm
+python scripts/create_welch_portfolio_workbook.py portfolio_sweep_slurm
 ```
 
 The workbook stores the paired-future means and covariance matrix for every
@@ -264,7 +269,7 @@ Plot the candidate selected from the Pareto frontier independently at every
 evaluation horizon, rather than fixing the final-period selection:
 
 ```bash
-python plot_horizon_pareto_asset_selection.py portfolio_sweep_slurm
+python scripts/plot_horizon_pareto_asset_selection.py portfolio_sweep_slurm
 ```
 
 It writes separate low-risk, optimum, and high-return time-series figures,
@@ -281,7 +286,7 @@ deterministic node/link sorting and source-to-target SVG gradients, use the
 standalone generator:
 
 ```bash
-python plot_horizon_pareto_asset_selection_d3.py portfolio_sweep_slurm_v5
+python scripts/plot_horizon_pareto_asset_selection_d3.py portfolio_sweep_slurm_v5
 ```
 
 The lower return chart includes one-sigma error bars around each service's
@@ -346,7 +351,7 @@ using the same color for that size's asset markers and frontier curve.
 Regenerate all plots from an existing run without resimulating:
 
 ```bash
-python sweep_portfolio_rate_changes.py --replot-only --output-dir full_sweep
+python scripts/sweep_portfolio_rate_changes.py --replot-only --output-dir full_sweep
 ```
 
 Run the six company profiles as a SLURM array, using one node and one local
@@ -387,7 +392,7 @@ value for a smoke run before committing a full allocation.
 Illustrative three-portfolio plot:
 
 ```bash
-python plot_illustrative_portfolios.py --runs 200 --backend auto
+python scripts/plot_illustrative_portfolios.py --runs 200 --backend auto
 ```
 
 Add `--figure-width one-column` to write a compact 3.5-inch-wide,
@@ -477,10 +482,10 @@ With `--hardware-calibration rtx6000-blackwell-gemma-moe-26b`:
 The internal index scale remains the simulation's native accounting layer. The dollar inputs are a convenience mapping on top of it.
 
 Local hardware is selected from the discrete planning catalogue in
-`hardware_benchmarks.csv`. Its SLA-limited concurrent-user capacity is applied
+`configs/hardware_benchmarks.csv`. Its SLA-limited concurrent-user capacity is applied
 as an aggregate local-service cap rather than a soft capacity percentage. The
 assumptions, public source links, and update method are documented in
-`HARDWARE_BENCHMARKS.md`.
+`docs/HARDWARE_BENCHMARKS.md`.
 
 The 3D plot uses:
 
@@ -703,7 +708,7 @@ Hardware budget now affects local scenarios continuously:
 - `0.0 < hardware_budget_scale < 1.0`: the model buys a fraction of the target local setup, pays the corresponding amortized cost share, blends in the local waiting effect, and blends in the refresh capability bonus.
 - `hardware_budget_scale = 1.0`: the full local scenario is funded.
 
-Hardware calibration profiles use the supplied RTX 6000 Ada, RTX 6000 Pro, H100, and B200 system tiers. The sweep selects the highest affordable tier and scales it with replicas. It also evaluates a `cloud_oss` asset: proportional in-EU cloud hardware for the same OSS model, with no CAPEX or queueing loss, half of confidential requests eligible, and no embargo exposure. See [the hardware methodology](HARDWARE_BENCHMARKS.md).
+Hardware calibration profiles use the supplied RTX 6000 Ada, RTX 6000 Pro, H100, and B200 system tiers. The sweep selects the highest affordable tier and scales it with replicas. It also evaluates a `cloud_oss` asset: proportional in-EU cloud hardware for the same OSS model, with no CAPEX or queueing loss, half of confidential requests eligible, and no embargo exposure. See [the hardware methodology](docs/HARDWARE_BENCHMARKS.md).
 
 The simulation assumes perfect IT setup: no integration losses, security overhead, downtime, networking bottlenecks, or staff cost.
 
@@ -732,9 +737,9 @@ Adoption:
 
 Costs and hardware:
 
-- The current pricing, model-size, parallel-user, and private-cloud-rate inputs are the project-supplied table dated 14 July 2026. Their transcription and interpretation are documented in [HARDWARE_BENCHMARKS.md](HARDWARE_BENCHMARKS.md).
+- The current pricing, model-size, parallel-user, and private-cloud-rate inputs are the project-supplied table dated 14 July 2026. Their transcription and interpretation are documented in [the hardware methodology](docs/HARDWARE_BENCHMARKS.md).
 - Google Cloud documents hourly GPU billing separately from VM, storage, and network costs; the latter are intentionally excluded under the ideal-IT assumption. https://cloud.google.com/products/compute/gpus-pricing
-- The 26B-and-larger local-model frontier-quality shares are sensitivity assumptions informed by the Gemma model card and task heterogeneity evidence, rather than benchmark claims. [HARDWARE_BENCHMARKS.md](HARDWARE_BENCHMARKS.md) gives the values and sources.
+- The 26B-and-larger local-model frontier-quality shares are sensitivity assumptions informed by the Gemma model card and task heterogeneity evidence, rather than benchmark claims. [The hardware methodology](docs/HARDWARE_BENCHMARKS.md) gives the values and sources.
 - On-premise and OSS-cloud scenarios for companies up to 50 employees include a default 0.5-FTE TVöD Bund E 12/Stufe 3 IT position, including a 25% employer-cost load estimate. Use `--disable-it-support` or `--it-support-max-users` to change this.
 - The sweep writes `portfolio_per_bracket_pareto_table.md` at its output root. Its columns are grouped by employee bracket and portfolio split; rows group capability/token shock assumptions and work-mix profiles. Cells report the selected asset type, return, and risk.
 

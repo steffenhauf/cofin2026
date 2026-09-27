@@ -19,9 +19,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.ndimage import label as connected_components
-
 from simulate_llm_efficiency import (
-    _hardware_replica_count, _resolve_backend, hardware_purchase_cost_usd)
+    CONFIG_DIR, _hardware_replica_count, _resolve_backend,
+    hardware_purchase_cost_usd)
 from simulate_llm_efficiency_economics import (
     SERVICE_TYPES, economic_config, load_economic_configuration,
     run_economic_simulation)
@@ -78,7 +78,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path("llm_efficiency_economics_config.yaml"),
+        default=CONFIG_DIR / "llm_efficiency_economics_config.yaml",
     )
     parser.add_argument(
         "--profile", help="Run one named company profile (for SLURM arrays)."

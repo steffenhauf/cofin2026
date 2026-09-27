@@ -21,8 +21,6 @@ import numpy as np
 import pandas as pd
 from matplotlib.lines import Line2D
 from scipy.optimize import curve_fit
-from tqdm.auto import tqdm
-
 from simulate_llm_efficiency import (
     ACCESS_PLANS, HARDWARE_CALIBRATIONS, HARDWARE_SCENARIOS,
     LOCAL_FALLBACK_POLICIES, MODEL_SCENARIOS, SHOCK_COMBINATIONS,
@@ -30,6 +28,7 @@ from simulate_llm_efficiency import (
     _hardware_calibration_profile, _resolve_backend, _simulate_one_scenario,
     configuration_path_from_argv, hardware_purchase_cost_usd,
     load_simulation_configuration)
+from tqdm.auto import tqdm
 
 HEADCOUNTS = (5, 25, 50, 100, 500, 2500)
 SERVICE_BUDGETS_USD = (5.0, 10.0, 25.0, 50.0)
@@ -2711,7 +2710,7 @@ def parse_args() -> argparse.Namespace:
         "--config",
         type=Path,
         default=config_path,
-        help="YAML configuration file (default: simulation_config.yaml).",
+        help="YAML configuration file (default: configs/simulation_config.yaml).",
     )
     parser.add_argument(
         "--replot-only",

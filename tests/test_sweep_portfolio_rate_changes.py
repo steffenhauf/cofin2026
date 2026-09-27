@@ -1,5 +1,4 @@
 import pandas as pd
-
 from simulate_llm_efficiency import (
     SHOCK_COMBINATIONS, SimulationConfig, _capability_multiplier,
     _hardware_adjustments, _period_probability, _stochastic_token_cost)

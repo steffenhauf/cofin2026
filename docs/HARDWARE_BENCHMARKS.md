@@ -1,6 +1,7 @@
 # Hardware benchmark and local-model-quality inputs
 
-`hardware_benchmarks.csv` is the costing and capacity input used by both the
+[`configs/hardware_benchmarks.csv`](../configs/hardware_benchmarks.csv) is the
+costing and capacity input used by both the
 single simulation and the portfolio sweep. It deliberately models ideal IT
 operations: no host, networking, electricity, staff, or idle-capacity charge.
 All euro amounts are used as dollar-denominated planning inputs, matching the

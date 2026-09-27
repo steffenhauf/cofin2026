@@ -1,0 +1,74 @@
+# Economic scenario inputs for simulate_llm_efficiency_economics.py and
+# sweep_llm_efficiency_economics.py. Monetary values are editable assumptions.
+simulation_config: simulation_config.yaml
+
+economics:
+  currency: EUR
+  eur_per_usd: 0.92
+  # Discount rates are nominal annual WACC-style hurdle rates. The 8% base case
+  # is a conservative SME/technology investment assumption, not a market quote.
+  labor_savings_discount_rate: 0.08
+  output_uplift_discount_rate: 0.10
+  # TVoeD Bund gross monthly pay anchors, with a 25% employer-cost uplift. The
+  # E12/Stufe-3 value is the project baseline; task mappings are deliberately
+  # transparent scenario assumptions and should be replaced by payroll data.
+  employer_cost_factor: 1.25
+  tvod_monthly_gross_eur:
+    software_engineering: 5359.50   # E12/Stufe 3 baseline
+    administration: 4445.00         # E9b/Stufe 3 illustrative anchor
+    creative_work: 4940.00          # E10/Stufe 3 illustrative anchor
+    manual_labor: 3650.00           # E5/Stufe 3 illustrative anchor
+    knowledge_work: 5359.50         # E12/Stufe 3 baseline
+  # Annual gross-margin contribution per FTE, rather than revenue. These are
+  # conservative B2B contribution-margin planning assumptions: the incremental
+  # product value remains after direct delivery costs, but before fixed overhead.
+  annual_gross_margin_eur:
+    software_engineering: 150000
+    administration: 95000
+    creative_work: 120000
+    manual_labor: 75000
+    knowledge_work: 140000
+  # Baseline share of AI-relevant work involving confidential documents, by
+  # task type. In the dense sweep, `confidential_document_fractions` is an
+  # exposure scale from 0 to 1 applied to these baselines. This lets the same
+  # scenario vary appropriately with each organisation's employee mix.
+  confidential_document_fraction_by_task:
+    software_engineering: 0.65
+    administration: 0.45
+    creative_work: 0.30
+    manual_labor: 0.10
+    knowledge_work: 0.75
+
+sweep:
+  years: 3.0
+  resolution_months: 1
+  runs: 100
+  seed: 20260724
+  headcounts: [25, 100, 500]
+  service_budgets_usd: [10.0, 25.0, 50.0]
+  hardware_budgets_usd: [0.0, 15000.0, 50000.0, 380000.0]
+  company_profiles:
+    administration_heavy: {software_engineering: 0.05, administration: 0.70, manual_labor: 0.10, knowledge_work: 0.15, creative_work: 0.0}
+    mixed: {software_engineering: 0.25, administration: 0.35, manual_labor: 0.10, knowledge_work: 0.20, creative_work: 0.10}
+    manual_labor_heavy: {software_engineering: 0.05, administration: 0.15, manual_labor: 0.70, knowledge_work: 0.10, creative_work: 0.0}
+    software_engineering_heavy: {software_engineering: 0.75, administration: 0.10, manual_labor: 0.05, knowledge_work: 0.10, creative_work: 0.0}
+    knowledge_worker_heavy: {software_engineering: 0.10, administration: 0.20, manual_labor: 0.05, knowledge_work: 0.65, creative_work: 0.0}
+    creative_worker_heavy: {software_engineering: 0.05, administration: 0.10, manual_labor: 0.05, knowledge_work: 0.10, creative_work: 0.70}
+
+# Used by sweep_llm_efficiency_economics.py --dense. This grid is intentionally
+# separate from the standard sweep because its output is stored as compressed
+# HDF5, not CSV. Cloud routes use `service_budgets_usd` directly. On-prem routes
+# use `hardware_budgets_usd`, normalized to CAPEX/(employees*horizon months)
+# plus applicable monthly IT support per employee for the common budget axis.
+dense_grid:
+  years: 3.0
+  resolution_months: 1
+  runs: 100
+  seed: 20260725
+  headcounts: [10, 25, 50, 75, 100, 150, 200, 250, 500, 1000, 1500, 2000, 3000, 4000]
+  confidential_document_fractions: [0.0, 0.05, 0.10, 0.20, 0.35, 0.50, 0.70, 0.90]
+  service_budgets_usd: [5.0, 10.0, 15.0, 20.0, 30.0, 40.0, 60.0, 80.0, 100.0]
+  hardware_budgets_usd: [0.0, 8500.0, 15000.0, 50000.0, 100000.0, 380000.0, 750000.0, 1000000.0, 5000000.0]
+  # Common monthly affordability caps used for fixed-budget contour slices.
+  # On-prem observations are matched to the closest available normalized cap.
+  fixed_budget_slices_usd: [10.0, 30.0, 80.0]

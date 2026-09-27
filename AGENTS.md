@@ -2,22 +2,24 @@
 
 ## Repository layout
 
-- `simulate_llm_efficiency.py` contains the core Monte Carlo model and its
+- `scripts/simulate_llm_efficiency.py` contains the core Monte Carlo model and its
   command-line entry point.
-- `sweep_*.py` run budget, economics, and portfolio parameter sweeps.
-- `plot_*.py`, `render_*.py`, and
-  `package_period_frontier_return_rates.py` post-process existing results.
-- `test_*.py` are the pytest regression tests.
-- `simulation_config*.yaml` and `validation_config_*.yaml` contain model and
-  validation inputs. Do not silently change assumptions in code when the
-  corresponding value belongs in configuration.
+- `scripts/sweep_*.py` run budget, economics, and portfolio parameter sweeps.
+- `scripts/plot_*.py`, `scripts/render_*.py`, and
+  `scripts/package_period_frontier_return_rates.py` post-process existing
+  results.
+- `tests/` contains the pytest regression tests.
+- `configs/simulation_config*.yaml` and `configs/validation_config_*.yaml`
+  contain model and validation inputs. Do not silently change assumptions in
+  code when the corresponding value belongs in configuration.
+- `docs/` contains supporting methodology and validation documentation.
 - `slurm/` contains the tracked array and merge job templates.
 - Generated CSV, HDF5, image, archive, cache, and Slurm log files are outputs,
   not source. Do not edit or commit them unless a task explicitly requires it.
 
 The detailed model description and user-facing commands live in `README.md`.
-Hardware assumptions are documented in `HARDWARE_BENCHMARKS.md`, and the
-simulation algorithm is summarized in `SIMULATION_PSEUDOCODE.md`.
+Hardware assumptions are documented in `docs/HARDWARE_BENCHMARKS.md`, and the
+simulation algorithm is summarized in `docs/SIMULATION_PSEUDOCODE.md`.
 
 ## Local setup and checks
 

@@ -19,13 +19,12 @@ import matplotlib.pyplot as plt
 import matplotlib.tri as mtri
 import numpy as np
 import pandas as pd
-from tqdm.auto import tqdm
-
 from simulate_llm_efficiency import (
     HARDWARE_CALIBRATIONS, HARDWARE_SCENARIOS, SIMULATION_DEFAULTS,
     SWEEP_DEFAULTS, SimulationConfig, _hardware_calibration_profile,
     _resolve_backend, configuration_path_from_argv,
     load_simulation_configuration, run_simulation, summarize)
+from tqdm.auto import tqdm
 
 
 def parse_employee_mix(mix_arg: str | None) -> dict[str, float] | None:
@@ -747,7 +746,7 @@ def parse_args() -> argparse.Namespace:
         "--config",
         type=Path,
         default=config_path,
-        help="YAML configuration file (default: simulation_config.yaml).",
+        help="YAML configuration file (default: configs/simulation_config.yaml).",
     )
     parser.add_argument(
         "--replot-only",

@@ -12,7 +12,6 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 import pandas as pd
-
 from simulate_llm_efficiency import (
     HARDWARE_CALIBRATIONS, HARDWARE_SCENARIOS, SimulationConfig,
     _hardware_calibration_profile, _resolve_backend)

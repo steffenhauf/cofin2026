@@ -10,9 +10,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import yaml
-
 from simulate_llm_efficiency import (
-    HARDWARE_CALIBRATIONS, HARDWARE_SCENARIOS, SimulationConfig,
+    CONFIG_DIR, HARDWARE_CALIBRATIONS, HARDWARE_SCENARIOS, SimulationConfig,
     _hardware_calibration_profile, _hardware_replica_count,
     _it_support_cost_index, _resolve_backend, _simulate_one_scenario,
     hardware_purchase_cost_usd, load_simulation_configuration)
@@ -279,7 +278,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path("llm_efficiency_economics_config.yaml"),
+        default=CONFIG_DIR / "llm_efficiency_economics_config.yaml",
     )
     parser.add_argument("--users", type=int, default=100)
     parser.add_argument("--years", type=float, default=3.0)
