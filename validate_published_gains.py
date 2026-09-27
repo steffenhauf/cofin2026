@@ -414,6 +414,69 @@ def plot_comparison_landscape(summary: pd.DataFrame, operational: pd.DataFrame, 
     plt.close(fig)
 
 
+def plot_comparison_a4_full_width(summary: pd.DataFrame, operational: pd.DataFrame, output_path: Path) -> None:
+    """Write a compact A4-width comparison containing only All and Innovators."""
+    scenarios = (ADOPTION_SCENARIOS[0], ADOPTION_SCENARIOS[3])
+    summary = summary.copy()
+    summary["evidence_type"] = "peer-reviewed"
+    operational = operational.copy()
+    operational["evidence_type"] = "vendor-reported"
+    combined = pd.concat([summary, operational], ignore_index=True)
+    group_columns = ["year", "profile", "context", "publication", "evidence_type"]
+    groups = list(combined.groupby(group_columns, sort=False))
+    groups.reverse()
+    x = np.arange(len(groups))
+    fig, ax = plt.subplots(figsize=(7.25, 3.1))
+    ax.axhline(0.0, color="#6b7280", linewidth=.8, zorder=0)
+    offsets = (-.12, .12)
+    for index, (_, group) in enumerate(groups):
+        for adoption_scenario, offset in zip(scenarios, offsets):
+            row = group[group["adoption_scenario"] == adoption_scenario["name"]].iloc[0]
+            scenario_x = index + offset
+            color = str(adoption_scenario["color"])
+            ax.vlines(scenario_x, row["model_p05_pct"], row["model_p95_pct"], color=color, linewidth=1.5, zorder=2)
+            ax.scatter(scenario_x, row["model_median_pct"], color=color,
+                marker=str(adoption_scenario["marker"]), s=24, zorder=3)
+        row = group.iloc[0]
+        published = float(row["published_gain_pct"])
+        marker = "s" if row["evidence_type"] == "vendor-reported" else "D"
+        if "published_low_pct" in row and pd.notna(row.get("published_low_pct")):
+            error = np.array([[published - float(row["published_low_pct"])],
+                              [float(row["published_high_pct"]) - published]])
+            ax.errorbar(index, published, yerr=error, fmt=marker, color="#b45309", capsize=2, zorder=4)
+        elif pd.notna(row.get("published_uncertainty_pct")):
+            ax.errorbar(index, published, yerr=float(row["published_uncertainty_pct"]),
+                fmt=marker, color="#b45309", capsize=2, zorder=4)
+        else:
+            ax.scatter(index, published, marker=marker, color="#b45309", s=24, zorder=4)
+    profile_labels = {
+        "administration_heavy": "Admin.",
+        "knowledge_worker_heavy": "Knowledge",
+        "software_engineering_heavy": "Software eng.",
+    }
+    labels = [
+        f"{row['year']} {profile_labels[row['profile']]}\n{str(row['publication']).split(' (')[0]}"
+        for _, group in groups
+        for row in [group.iloc[0]]
+    ]
+    ax.set_xticks(x, labels, rotation=35, ha="right", fontsize=7.5)
+    ax.set_ylabel("Workforce-wide annualized\nAI gain (%)", fontsize=9)
+    ax.tick_params(axis="y", labelsize=8)
+    ax.grid(axis="y", alpha=.25)
+    handles = [
+        *[Line2D([0], [0], color=scenario["color"], marker=scenario["marker"],
+                 linewidth=1.5, markersize=4, label=label)
+          for scenario, label in zip(scenarios, ("All", "Innovators"))],
+        Line2D([0], [0], color="#b45309", marker="D", linestyle="None", markersize=4, label="Peer reviewed"),
+        Line2D([0], [0], color="#b45309", marker="s", linestyle="None", markersize=4, label="Vendor reported"),
+    ]
+    ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(.5, 1.18), ncols=4,
+        fontsize=7.5, frameon=False, handlelength=1.2, columnspacing=1.4)
+    fig.subplots_adjust(left=.15, right=.995, bottom=.43, top=.80)
+    fig.savefig(output_path, dpi=300)
+    plt.close(fig)
+
+
 def main() -> None:
     args = parse_args()
     if args.runs < 2:
@@ -448,6 +511,7 @@ def main() -> None:
     pd.concat(run_frames, ignore_index=True).to_csv(args.output_dir / "validation_run_level_results.csv", index=False)
     plot_comparison(comparison, operational, args.output_dir / "published_gain_comparison.png")
     plot_comparison_landscape(comparison, operational, args.output_dir / "published_gain_comparison_landscape.png")
+    plot_comparison_a4_full_width(comparison, operational, args.output_dir / "published_gain_comparison_a4_full_width.png")
     print(f"Wrote validation comparison to {args.output_dir}")
 
 

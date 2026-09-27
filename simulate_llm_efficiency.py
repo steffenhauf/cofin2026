@@ -366,6 +366,7 @@ class SimulationConfig:
     max_monthly_service_budget_usd: float | None = None
     max_upfront_hardware_budget_usd: float | None = None
     confidential_document_fraction: float = float(SIMULATION_DEFAULTS["confidential_document_fraction"])
+    confidential_document_fraction_by_task: dict[str, float] | None = None
     zero_risk_confidential_work_share: float = float(SIMULATION_DEFAULTS["zero_risk_confidential_work_share"])
     counterfactual_skill_growth_enabled: bool = True
     counterfactual_skill_growth_rate_per_year: float = DEFAULT_COUNTERFACTUAL_SKILL_GROWTH_RATE_PER_YEAR
@@ -374,6 +375,7 @@ class SimulationConfig:
     hardware_calibration: str = str(SIMULATION_DEFAULTS["hardware_calibration"])
     onprem_capability_multiplier: float = 1.0
     employee_mix: dict[str, float] | None = None
+    participating_personas: tuple[str, ...] | None = None
     engineering_context: str = str(SIMULATION_DEFAULTS["engineering_context"])
     adoption_propensity_concentration: float = float(SIMULATION_DEFAULTS["adoption_propensity_concentration"])
     adoption_capability_elasticity: float = float(SIMULATION_DEFAULTS["adoption_capability_elasticity"])
@@ -448,6 +450,19 @@ class SimulationConfig:
 
     @property
     def effective_confidential_document_fraction(self) -> float:
+        if self.confidential_document_fraction_by_task is not None and self.employee_mix is not None:
+            missing = set(self.employee_mix) - set(self.confidential_document_fraction_by_task)
+            if missing:
+                raise ValueError(f"Confidential-work shares are missing task types: {sorted(missing)}")
+            baseline = sum(
+                float(share) * float(self.confidential_document_fraction_by_task[task])
+                for task, share in self.employee_mix.items()
+            )
+            return float(np.clip(
+                self.confidential_document_fraction * baseline,
+                0.0,
+                MAX_CONFIDENTIAL_DOCUMENT_FRACTION,
+            ))
         return float(np.clip(self.confidential_document_fraction, 0.0, MAX_CONFIDENTIAL_DOCUMENT_FRACTION))
 
 
@@ -554,6 +569,13 @@ def _sample_users(rng: np.random.Generator, users: int, config: SimulationConfig
         / (1.0 - config.early_majority_effort_expectancy_beta * config.effort_expectancy_friction)
         * (1.0 + config.adaptability_productivity_beta * (users_df["adaptability_index"] - config.early_majority_adaptability_index))
     )
+    if config.participating_personas is None:
+        users_df["ai_participant"] = True
+    else:
+        unknown = set(config.participating_personas) - set(BASE_PERSONAS["persona"])
+        if unknown:
+            raise ValueError(f"Unknown participating persona: {', '.join(sorted(unknown))}")
+        users_df["ai_participant"] = users_df["persona"].isin(config.participating_personas)
     return users_df
 
 
@@ -966,7 +988,7 @@ def _simulate_one_scenario(args: tuple) -> pd.DataFrame:
 
             adoption_multiplier = 1.0 + config.adoption_capability_elasticity * (capability - 1.0)
             adoption_prob = np.clip(users_df["adoption_propensity"].to_numpy(float) * adoption_multiplier, 0.02, 0.98)
-            active = rng.random(config.users) < adoption_prob
+            active = (rng.random(config.users) < adoption_prob) & users_df["ai_participant"].to_numpy(bool)
             base_requested_usage = users_df["usage_intensity"].to_numpy(float) * active
             (
                 effective_usage,
@@ -1019,6 +1041,7 @@ def _simulate_one_scenario(args: tuple) -> pd.DataFrame:
                 config.zero_risk_feature_gain
                 * gain_scale
                 * users_df["adoption_mean"].to_numpy(float)
+                * users_df["ai_participant"].to_numpy(float)
                 * zero_risk_access_multiplier
                 * gain_discount
             )
@@ -1136,6 +1159,7 @@ def _numba_simulator():
     def simulate_run(
         adoption_propensity: np.ndarray,
         adoption_mean: np.ndarray,
+        ai_participant: np.ndarray,
         capability_fit: np.ndarray,
         usage_intensity: np.ndarray,
         wait_tolerance: np.ndarray,
@@ -1271,7 +1295,7 @@ def _numba_simulator():
                 elif adoption_prob > 0.98:
                     adoption_prob = 0.98
 
-                active = adoption_draws[period, user] < adoption_prob
+                active = ai_participant[user] and adoption_draws[period, user] < adoption_prob
                 if active:
                     active_count += 1.0
 
@@ -1336,7 +1360,7 @@ def _numba_simulator():
                 elif adoption_prob > 0.98:
                     adoption_prob = 0.98
 
-                active = adoption_draws[period, user] < adoption_prob
+                active = ai_participant[user] and adoption_draws[period, user] < adoption_prob
                 base_requested_usage = usage_intensity[user] * (1.0 if active else 0.0)
                 confidential_requested = base_requested_usage * confidential_document_fraction
                 non_confidential_requested = base_requested_usage - confidential_requested
@@ -1412,7 +1436,7 @@ def _numba_simulator():
                 total_ai_gain += ai_realized_gain
                 if ai_realized_gain < 0.0:
                     negative_ai_gain_count += 1.0
-                zero_risk_gain_sum += zero_risk_feature_gain * resolution_months / 12.0 * adoption_mean[user] * zero_risk_confidential_access_multiplier * gain_discount
+                zero_risk_gain_sum += zero_risk_feature_gain * resolution_months / 12.0 * adoption_mean[user] * ai_participant[user] * zero_risk_confidential_access_multiplier * gain_discount
 
             total_cost = cloud_cost + hardware_cost
             total_realized_gain = total_ai_gain + zero_risk_gain_sum
@@ -1543,6 +1567,7 @@ def _simulate_one_scenario_numba(args: tuple) -> pd.DataFrame:
         metrics = simulate_run(
             adoption_propensity,
             adoption_mean,
+            users_df["ai_participant"].to_numpy(bool, copy=True),
             capability_fit,
             usage_intensity,
             wait_tolerance,
@@ -1674,6 +1699,7 @@ def _simulate_one_scenario_torch_mps(args: tuple) -> pd.DataFrame:
 
         adoption_propensity = torch.as_tensor(users_df["adoption_propensity"].to_numpy(float, copy=True), dtype=torch.float32, device=device)
         adoption_mean = torch.as_tensor(users_df["adoption_mean"].to_numpy(float, copy=True), dtype=torch.float32, device=device)
+        ai_participant = torch.as_tensor(users_df["ai_participant"].to_numpy(bool, copy=True), dtype=torch.bool, device=device)
         capability_fit = torch.as_tensor(users_df["capability_fit"].to_numpy(float, copy=True), dtype=torch.float32, device=device)
         usage_intensity = torch.as_tensor(users_df["usage_intensity"].to_numpy(float, copy=True), dtype=torch.float32, device=device)
         wait_tolerance = torch.as_tensor(users_df["wait_tolerance"].to_numpy(float, copy=True), dtype=torch.float32, device=device)
@@ -1724,7 +1750,7 @@ def _simulate_one_scenario_torch_mps(args: tuple) -> pd.DataFrame:
 
             adoption_multiplier = 1.0 + config.adoption_capability_elasticity * (capability - 1.0)
             adoption_prob = torch.clamp(adoption_propensity * adoption_multiplier, 0.02, 0.98)
-            active = torch.rand(config.users, generator=cpu_generator).to(device) < adoption_prob
+            active = (torch.rand(config.users, generator=cpu_generator).to(device) < adoption_prob) & ai_participant
             base_requested_usage = usage_intensity * active.to(torch.float32)
             confidential_requested = base_requested_usage * config.effective_confidential_document_fraction
             non_confidential_requested = base_requested_usage - confidential_requested
@@ -1802,6 +1828,7 @@ def _simulate_one_scenario_torch_mps(args: tuple) -> pd.DataFrame:
                 config.zero_risk_feature_gain
                 * gain_scale
                 * adoption_mean
+                * ai_participant.to(torch.float32)
                 * zero_risk_access_multiplier
                 * gain_discount
             )

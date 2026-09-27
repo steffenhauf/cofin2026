@@ -86,9 +86,9 @@ model:
     # on the Gemma model-card discussion in HARDWARE_BENCHMARKS.md, not a measured
     # accuracy conversion; test 0 and 1 when local quality is uncertain.
     rtx6000-ada-gemma4-12b: {target_unit_usd: 8500.0, onprem_capability_multiplier: 0.88, frontier_quality_work_share_multiplier: 0.0, onprem_model_label: Gemma 4 12B local model} # USD, fractions [0,1]; update from vendor quote/benchmark.
-    rtx6000-pro-gemma4-26b-moe: {target_unit_usd: 14500.0, onprem_capability_multiplier: 0.94, frontier_quality_work_share_multiplier: 0.5, onprem_model_label: Gemma 4 26B MoE local model} # same units/source.
-    h100-gemma4-31b: {target_unit_usd: 380000.0, onprem_capability_multiplier: 0.97, frontier_quality_work_share_multiplier: 0.9, onprem_model_label: Gemma 4 31B local model} # same units/source.
-    b200-gemma4-31b: {target_unit_usd: 750000.0, onprem_capability_multiplier: 0.97, frontier_quality_work_share_multiplier: 0.9, onprem_model_label: Gemma 4 31B local model} # same units/source.
+    rtx6000-pro-gemma4-26b-moe: {target_unit_usd: 14500.0, onprem_capability_multiplier: 0.94, frontier_quality_work_share_multiplier: 1.0, onprem_model_label: Gemma 4 26B MoE local model} # same units/source.
+    h100-gemma4-31b: {target_unit_usd: 380000.0, onprem_capability_multiplier: 0.97, frontier_quality_work_share_multiplier: 1.0, onprem_model_label: Gemma 4 31B local model} # same units/source.
+    b200-gemma4-31b: {target_unit_usd: 750000.0, onprem_capability_multiplier: 0.97, frontier_quality_work_share_multiplier: 1.0, onprem_model_label: Gemma 4 31B local model} # same units/source.
 costs:
   months_per_year: 12 # months/year; calendar definition; fixed.
   hardware_amortization_months: 36 # months; common three-year IT planning assumption; sensitivity 24-60 months.
