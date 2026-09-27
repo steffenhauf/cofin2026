@@ -834,3 +834,8 @@ stateDiagram-v2
 - The on-prem model excludes installation, staffing, power, cooling, downtime, procurement lead time, and security review.
 - Adoption behavior is stylized and should be treated as scenario logic, not empirical prediction.
 - The open-source capability baseline is fixed at the frontier capability from 12 calendar months earlier. Hardware, access, and persona effects are applied separately when calculating realized returns.
+
+## License
+
+This repository is licensed under the [Creative Commons Attribution 4.0
+International License](LICENSE).
