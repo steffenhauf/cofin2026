@@ -9,7 +9,6 @@ from io import StringIO
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
-
 LEGACY_README_TEMPLATE = """# Period-frontier return-rate data
 
 This archive contains the `period_frontier_return_rates` output for every
@@ -102,7 +101,11 @@ CSV files use short, stable archive names to remain extractable on Windows:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("sweep_dir", type=Path, help="Root directory of a completed portfolio sweep.")
+    parser.add_argument(
+        "sweep_dir",
+        type=Path,
+        help="Root directory of a completed portfolio sweep.",
+    )
     parser.add_argument(
         "--output",
         type=Path,
@@ -123,7 +126,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def find_csvs(sweep_dir: Path, legacy: bool = False) -> list[Path]:
-    folder_name = "period_frontier_return_rates" if legacy else "final_shock_frontier_return_rates"
+    folder_name = (
+        "period_frontier_return_rates"
+        if legacy
+        else "final_shock_frontier_return_rates"
+    )
     csvs = sorted(
         path
         for profile_dir in sweep_dir.iterdir()
@@ -136,13 +143,20 @@ def find_csvs(sweep_dir: Path, legacy: bool = False) -> list[Path]:
     return csvs
 
 
-def package(sweep_dir: Path, output: Path, legacy: bool = False, legacy_layout: bool = False) -> int:
+def package(
+    sweep_dir: Path,
+    output: Path,
+    legacy: bool = False,
+    legacy_layout: bool = False,
+) -> int:
     if not sweep_dir.is_dir():
         raise SystemExit(f"Sweep directory does not exist: {sweep_dir}")
     csvs = find_csvs(sweep_dir, legacy)
     output.parent.mkdir(parents=True, exist_ok=True)
     with ZipFile(output, "w", compression=ZIP_DEFLATED) as archive:
-        readme = LEGACY_README_TEMPLATE if legacy else FINAL_SHOCK_README_TEMPLATE
+        readme = (
+            LEGACY_README_TEMPLATE if legacy else FINAL_SHOCK_README_TEMPLATE
+        )
         if not legacy_layout:
             readme += PORTABLE_LAYOUT_NOTE
         archive.writestr("README.md", readme)
@@ -152,7 +166,11 @@ def package(sweep_dir: Path, output: Path, legacy: bool = False, legacy_layout: 
             writer.writerow(("archive_path", "source_path"))
         for index, path in enumerate(csvs, start=1):
             source_path = path.relative_to(sweep_dir).as_posix()
-            archive_path = source_path if legacy_layout else f"{path.relative_to(sweep_dir).parts[0]}/{index:06d}.csv"
+            archive_path = (
+                source_path
+                if legacy_layout
+                else f"{path.relative_to(sweep_dir).parts[0]}/{index:06d}.csv"
+            )
             archive.write(path, archive_path)
             if not legacy_layout:
                 writer.writerow((archive_path, source_path))
@@ -164,7 +182,9 @@ def package(sweep_dir: Path, output: Path, legacy: bool = False, legacy_layout: 
 def main() -> None:
     args = parse_args()
     output = args.output or args.sweep_dir / (
-        "period_frontier_return_rates.zip" if args.legacy_period_frontier_return_rates else "final_shock_frontier_return_rates.zip"
+        "period_frontier_return_rates.zip"
+        if args.legacy_period_frontier_return_rates
+        else "final_shock_frontier_return_rates.zip"
     )
     count = package(
         args.sweep_dir,

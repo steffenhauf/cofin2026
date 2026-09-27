@@ -16,6 +16,32 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+For development, also install the formatter and test dependencies:
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+If the project Conda environment is available, activate it with
+`conda activate cofin` and install `requirements-dev.txt` there before running
+the checks.
+
+## Development
+
+Python source is formatted with Black at a 79-column target and isort
+multi-line mode 4. The commands operate only on files tracked by Git and must
+run in this order:
+
+```bash
+git ls-files -z '*.py' | xargs -0 -n 1 black
+git ls-files -z '*.py' | xargs -0 isort
+git diff --exit-code -- '*.py'
+```
+
+Run the regression tests with `pytest -q`. GitHub Actions and GitLab CI run
+the same formatting check on every pushed change. See [`AGENTS.md`](AGENTS.md)
+for the repository layout, contribution conventions, and Slurm operations.
+
 ## Run
 
 ```bash
@@ -351,6 +377,11 @@ sbatch --dependency="afterok:${ARRAY_JOB}" \
   --export=ALL,OUTPUT_DIR="$PWD/portfolio_sweep_slurm" \
   slurm/portfolio_profile_merge.sbatch
 ```
+
+Monitor the array with `squeue -u "$USER"` and inspect completed tasks with
+`sacct -j "$ARRAY_JOB"`. Cancel it with `scancel "$ARRAY_JOB"`. The array
+script also accepts `RUNS` and `BACKEND` through `--export`; use a low `RUNS`
+value for a smoke run before committing a full allocation.
 
 Illustrative three-portfolio plot:
 

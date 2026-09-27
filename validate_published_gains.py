@@ -21,18 +21,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import simulate_llm_efficiency as simulation
 from matplotlib.lines import Line2D
 
+import simulate_llm_efficiency as simulation
 from simulate_llm_efficiency import (
-    SIMULATION_DEFAULTS,
-    SimulationConfig,
-    _hardware_calibration_profile,
-    _resolve_backend,
-    load_simulation_configuration,
-    run_simulation,
-)
-
+    SIMULATION_DEFAULTS, SimulationConfig, _hardware_calibration_profile,
+    _resolve_backend, load_simulation_configuration, run_simulation)
 
 PROFILES = {
     "administration_heavy": {
@@ -164,7 +158,6 @@ ADOPTION_SCENARIOS = (
         "marker": "P",
         "offset": 0.20,
     },
-
     {
         "name": "innovators_only",
         "label": "Innovators",
@@ -178,17 +171,42 @@ ADOPTION_SCENARIOS = (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--runs", type=int, default=200, help="Monte-Carlo runs per focused case (default: 200).")
-    parser.add_argument("--concurrency", type=int, default=4, help="Local worker-process count per validation case.")
-    parser.add_argument("--backend", choices=["numpy", "numba", "torch-mps", "auto"], default="auto")
-    parser.add_argument("--output-dir", type=Path, default=Path("validation_outputs"))
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=200,
+        help="Monte-Carlo runs per focused case (default: 200).",
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=4,
+        help="Local worker-process count per validation case.",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=["numpy", "numba", "torch-mps", "auto"],
+        default="auto",
+    )
+    parser.add_argument(
+        "--output-dir", type=Path, default=Path("validation_outputs")
+    )
     return parser.parse_args()
 
 
-def build_config(config_path: Path, profile: dict[str, float], context: str, runs: int | None, concurrency: int, backend: str) -> SimulationConfig:
+def build_config(
+    config_path: Path,
+    profile: dict[str, float],
+    context: str,
+    runs: int | None,
+    concurrency: int,
+    backend: str,
+) -> SimulationConfig:
     load_simulation_configuration(config_path)
     defaults = SIMULATION_DEFAULTS
-    calibration = _hardware_calibration_profile(str(defaults["hardware_calibration"]))
+    calibration = _hardware_calibration_profile(
+        str(defaults["hardware_calibration"])
+    )
     # Validation configurations intentionally omit on-prem hardware scenarios,
     # so this unused index merely must remain positive for SimulationConfig.
     hardware_index_usd = float(calibration["target_unit_usd"]) / 165.0
@@ -200,37 +218,79 @@ def build_config(config_path: Path, profile: dict[str, float], context: str, run
         concurrency=concurrency,
         seed=int(defaults["seed"]),
         plateau_quarter=int(defaults["plateau_quarter"]),
-        base_cost_index_per_active_user_quarter=float(defaults["base_cost_index_per_active_user_quarter"]),
-        confidential_document_fraction=float(defaults["confidential_document_fraction"]),
-        zero_risk_confidential_work_share=float(defaults["zero_risk_confidential_work_share"]),
-        counterfactual_skill_growth_rate_per_year=float(defaults.get("counterfactual_skill_growth_rate_per_year", 0.015)),
-        usd_per_service_cost_index_quarter=float(defaults["usd_per_service_cost_index_quarter"]),
+        base_cost_index_per_active_user_quarter=float(
+            defaults["base_cost_index_per_active_user_quarter"]
+        ),
+        confidential_document_fraction=float(
+            defaults["confidential_document_fraction"]
+        ),
+        zero_risk_confidential_work_share=float(
+            defaults["zero_risk_confidential_work_share"]
+        ),
+        counterfactual_skill_growth_rate_per_year=float(
+            defaults.get("counterfactual_skill_growth_rate_per_year", 0.015)
+        ),
+        usd_per_service_cost_index_quarter=float(
+            defaults["usd_per_service_cost_index_quarter"]
+        ),
         usd_per_hardware_capex_index=hardware_index_usd,
         hardware_calibration=str(defaults["hardware_calibration"]),
-        onprem_capability_multiplier=float(calibration["onprem_capability_multiplier"]),
+        onprem_capability_multiplier=float(
+            calibration["onprem_capability_multiplier"]
+        ),
         employee_mix=profile,
         engineering_context=context,
-        adoption_propensity_concentration=float(defaults["adoption_propensity_concentration"]),
-        adoption_capability_elasticity=float(defaults["adoption_capability_elasticity"]),
-        effort_expectancy_friction=float(defaults["effort_expectancy_friction"]),
-        adaptability_productivity_beta=float(defaults["adaptability_productivity_beta"]),
-        early_majority_effort_expectancy_beta=float(defaults["early_majority_effort_expectancy_beta"]),
-        early_majority_adaptability_index=float(defaults["early_majority_adaptability_index"]),
-        improvement_base_probability=float(defaults["improvement_base_probability"]),
-        improvement_capability_weight=float(defaults["improvement_capability_weight"]),
-        improvement_probability_min=float(defaults["improvement_probability_min"]),
-        improvement_probability_max=float(defaults["improvement_probability_max"]),
+        adoption_propensity_concentration=float(
+            defaults["adoption_propensity_concentration"]
+        ),
+        adoption_capability_elasticity=float(
+            defaults["adoption_capability_elasticity"]
+        ),
+        effort_expectancy_friction=float(
+            defaults["effort_expectancy_friction"]
+        ),
+        adaptability_productivity_beta=float(
+            defaults["adaptability_productivity_beta"]
+        ),
+        early_majority_effort_expectancy_beta=float(
+            defaults["early_majority_effort_expectancy_beta"]
+        ),
+        early_majority_adaptability_index=float(
+            defaults["early_majority_adaptability_index"]
+        ),
+        improvement_base_probability=float(
+            defaults["improvement_base_probability"]
+        ),
+        improvement_capability_weight=float(
+            defaults["improvement_capability_weight"]
+        ),
+        improvement_probability_min=float(
+            defaults["improvement_probability_min"]
+        ),
+        improvement_probability_max=float(
+            defaults["improvement_probability_max"]
+        ),
         ai_gain_min=float(defaults["ai_gain_min"]),
         ai_gain_max=float(defaults["ai_gain_max"]),
         zero_risk_feature_gain=float(defaults["zero_risk_feature_gain"]),
         embargo_shock_probability=float(defaults["embargo_shock_probability"]),
         embargo_rollback_months=int(defaults["embargo_rollback_months"]),
-        sudden_break_even_probability_per_month=float(defaults["sudden_break_even_probability_per_month"]),
-        gradual_break_even_probability_per_month=float(defaults["gradual_break_even_probability_per_month"]),
-        capability_plateau_probability_per_month=float(defaults["capability_plateau_probability_per_month"]),
+        sudden_break_even_probability_per_month=float(
+            defaults["sudden_break_even_probability_per_month"]
+        ),
+        gradual_break_even_probability_per_month=float(
+            defaults["gradual_break_even_probability_per_month"]
+        ),
+        capability_plateau_probability_per_month=float(
+            defaults["capability_plateau_probability_per_month"]
+        ),
         confidential_mixing_ratio=float(defaults["confidential_mixing_ratio"]),
-        confidential_mixing_penalty=float(defaults["confidential_mixing_penalty"]),
-        cloud_oss_hours_per_usage_unit_period=defaults.get("cloud_oss_hours_per_usage_unit_period"),
+        confidential_mixing_penalty=float(
+            defaults["confidential_mixing_penalty"]
+        ),
+        cloud_oss_hours_per_usage_unit_period=defaults.get(
+            "cloud_oss_hours_per_usage_unit_period"
+        ),
         it_support_max_users=int(defaults["it_support_max_users"]),
         backend=_resolve_backend(backend),
         show_progress=False,
@@ -244,14 +304,27 @@ def _set_adoption_scenario(adoption_scenario: dict[str, object]) -> None:
     personas = simulation.BASE_PERSONAS
     selected = personas[personas["persona"].isin(persona_names)].copy()
     if len(selected) != len(persona_names):
-        raise ValueError(f"Missing persona in adoption scenario {adoption_scenario['name']}")
+        raise ValueError(
+            f"Missing persona in adoption scenario {adoption_scenario['name']}"
+        )
     selected["share"] = selected["share"] / selected["share"].sum()
     simulation.BASE_PERSONAS = selected
 
 
-def run_case(case: dict[str, object], adoption_scenario: dict[str, object], args: argparse.Namespace) -> tuple[pd.DataFrame, pd.DataFrame]:
+def run_case(
+    case: dict[str, object],
+    adoption_scenario: dict[str, object],
+    args: argparse.Namespace,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     config_path = Path(f"validation_config_{case['year']}.yaml")
-    config = build_config(config_path, PROFILES[str(case["profile"])], str(case["context"]), args.runs, args.concurrency, args.backend)
+    config = build_config(
+        config_path,
+        PROFILES[str(case["profile"])],
+        str(case["context"]),
+        args.runs,
+        args.concurrency,
+        args.backend,
+    )
     _set_adoption_scenario(adoption_scenario)
     results = run_simulation(config)
     # The validation YAMLs intentionally keep global and European cloud paths.
@@ -259,17 +332,25 @@ def run_case(case: dict[str, object], adoption_scenario: dict[str, object], args
     # by global_service; the European path is a sensitivity case, not evidence.
     results = results[results["service_provider"] == "global_service"].copy()
     final = results[results["period"] == results["period"].max()].copy()
-    active_gain = np.divide(
-        final["mean_ai_efficiency_gain"].to_numpy(float),
-        final["active_user_share"].to_numpy(float),
-        out=np.full(len(final), np.nan),
-        where=final["active_user_share"].to_numpy(float) > 0.0,
-    ) * config.annualization_factor * 100.0
+    active_gain = (
+        np.divide(
+            final["mean_ai_efficiency_gain"].to_numpy(float),
+            final["active_user_share"].to_numpy(float),
+            out=np.full(len(final), np.nan),
+            where=final["active_user_share"].to_numpy(float) > 0.0,
+        )
+        * config.annualization_factor
+        * 100.0
+    )
     final["active_user_annualized_gain_pct"] = active_gain
     final["workforce_annualized_gain_pct"] = (
-        final["mean_ai_efficiency_gain"].to_numpy(float) * config.annualization_factor * 100.0
+        final["mean_ai_efficiency_gain"].to_numpy(float)
+        * config.annualization_factor
+        * 100.0
     )
-    quantiles = final["workforce_annualized_gain_pct"].quantile([0.05, 0.5, 0.95])
+    quantiles = final["workforce_annualized_gain_pct"].quantile(
+        [0.05, 0.5, 0.95]
+    )
     row = {
         **case,
         "adoption_scenario": adoption_scenario["name"],
@@ -284,37 +365,86 @@ def run_case(case: dict[str, object], adoption_scenario: dict[str, object], args
     return pd.DataFrame([row]), final
 
 
-def _plot_comparison(ax: plt.Axes, summary: pd.DataFrame, operational: pd.DataFrame) -> list[Line2D]:
+def _plot_comparison(
+    ax: plt.Axes, summary: pd.DataFrame, operational: pd.DataFrame
+) -> list[Line2D]:
     summary = summary.copy()
     summary["evidence_type"] = "peer-reviewed"
     operational = operational.copy()
     operational["evidence_type"] = "vendor-reported"
     combined = pd.concat([summary, operational], ignore_index=True)
-    group_columns = ["year", "profile", "context", "publication", "evidence_type"]
+    group_columns = [
+        "year",
+        "profile",
+        "context",
+        "publication",
+        "evidence_type",
+    ]
     groups = list(combined.groupby(group_columns, sort=False))
     groups.reverse()
     y = np.arange(len(groups))
     ax.axvline(0.0, color="#6b7280", linewidth=1.0, zorder=0)
     for index, (_, group) in enumerate(groups):
         for adoption_scenario in ADOPTION_SCENARIOS:
-            row = group[group["adoption_scenario"] == adoption_scenario["name"]].iloc[0]
+            row = group[
+                group["adoption_scenario"] == adoption_scenario["name"]
+            ].iloc[0]
             scenario_y = index + float(adoption_scenario["offset"])
             color = str(adoption_scenario["color"])
-            ax.hlines(scenario_y, row["model_p05_pct"], row["model_p95_pct"], color=color, linewidth=1.8, zorder=2)
-            ax.scatter(row["model_median_pct"], scenario_y, color=color, marker=str(adoption_scenario["marker"]), s=25, zorder=3)
+            ax.hlines(
+                scenario_y,
+                row["model_p05_pct"],
+                row["model_p95_pct"],
+                color=color,
+                linewidth=1.8,
+                zorder=2,
+            )
+            ax.scatter(
+                row["model_median_pct"],
+                scenario_y,
+                color=color,
+                marker=str(adoption_scenario["marker"]),
+                s=25,
+                zorder=3,
+            )
         row = group.iloc[0]
         published = float(row["published_gain_pct"])
         marker = "s" if row["evidence_type"] == "vendor-reported" else "D"
-        if "published_low_pct" in row and pd.notna(row.get("published_low_pct")):
+        if "published_low_pct" in row and pd.notna(
+            row.get("published_low_pct")
+        ):
             low = published - float(row["published_low_pct"])
             high = float(row["published_high_pct"]) - published
-            ax.errorbar(published, index, xerr=np.array([[low], [high]]), fmt=marker, color="#b45309", capsize=3, zorder=4)
+            ax.errorbar(
+                published,
+                index,
+                xerr=np.array([[low], [high]]),
+                fmt=marker,
+                color="#b45309",
+                capsize=3,
+                zorder=4,
+            )
         else:
             uncertainty = row.get("published_uncertainty_pct")
             if pd.notna(uncertainty):
-                ax.errorbar(published, index, xerr=float(uncertainty), fmt=marker, color="#b45309", capsize=3, zorder=4)
+                ax.errorbar(
+                    published,
+                    index,
+                    xerr=float(uncertainty),
+                    fmt=marker,
+                    color="#b45309",
+                    capsize=3,
+                    zorder=4,
+                )
             else:
-                ax.scatter(published, index, marker=marker, color="#b45309", s=28, zorder=4)
+                ax.scatter(
+                    published,
+                    index,
+                    marker=marker,
+                    color="#b45309",
+                    s=28,
+                    zorder=4,
+                )
     profile_labels = {
         "administration_heavy": "admin.",
         "knowledge_worker_heavy": "knowledge",
@@ -332,19 +462,55 @@ def _plot_comparison(ax: plt.Axes, summary: pd.DataFrame, operational: pd.DataFr
     ax.tick_params(axis="x", labelsize=7)
     return [
         *[
-            Line2D([0], [0], color=scenario["color"], marker=scenario["marker"], linewidth=1.8, markersize=4, label=scenario["label"])
+            Line2D(
+                [0],
+                [0],
+                color=scenario["color"],
+                marker=scenario["marker"],
+                linewidth=1.8,
+                markersize=4,
+                label=scenario["label"],
+            )
             for scenario in ADOPTION_SCENARIOS
         ],
-        Line2D([0], [0], color="#b45309", marker="D", linestyle="None", markersize=4, label="Peer reviewed"),
-        Line2D([0], [0], color="#b45309", marker="s", linestyle="None", markersize=4, label="Vendor reported"),
+        Line2D(
+            [0],
+            [0],
+            color="#b45309",
+            marker="D",
+            linestyle="None",
+            markersize=4,
+            label="Peer reviewed",
+        ),
+        Line2D(
+            [0],
+            [0],
+            color="#b45309",
+            marker="s",
+            linestyle="None",
+            markersize=4,
+            label="Vendor reported",
+        ),
     ]
 
 
-def plot_comparison(summary: pd.DataFrame, operational: pd.DataFrame, output_path: Path) -> None:
+def plot_comparison(
+    summary: pd.DataFrame, operational: pd.DataFrame, output_path: Path
+) -> None:
     # 3.5 in is the conventional width of one column in a two-column paper.
     fig, ax = plt.subplots(figsize=(3.5, 5.8))
     handles = _plot_comparison(ax, summary, operational)
-    for handle, label in zip(handles, ("All", "Innov.–early maj.", "Innov.+early adop.", "Innovators", "Peer reviewed", "Vendor")):
+    for handle, label in zip(
+        handles,
+        (
+            "All",
+            "Innov.–early maj.",
+            "Innov.+early adop.",
+            "Innovators",
+            "Peer reviewed",
+            "Vendor",
+        ),
+    ):
         handle.set_label(label)
     ax.legend(
         handles=handles,
@@ -361,14 +527,22 @@ def plot_comparison(summary: pd.DataFrame, operational: pd.DataFrame, output_pat
     plt.close(fig)
 
 
-def plot_comparison_landscape(summary: pd.DataFrame, operational: pd.DataFrame, output_path: Path) -> None:
+def plot_comparison_landscape(
+    summary: pd.DataFrame, operational: pd.DataFrame, output_path: Path
+) -> None:
     """Write a transposed, vertically compact version for a landscape column."""
     summary = summary.copy()
     summary["evidence_type"] = "peer-reviewed"
     operational = operational.copy()
     operational["evidence_type"] = "vendor-reported"
     combined = pd.concat([summary, operational], ignore_index=True)
-    group_columns = ["year", "profile", "context", "publication", "evidence_type"]
+    group_columns = [
+        "year",
+        "profile",
+        "context",
+        "publication",
+        "evidence_type",
+    ]
     groups = list(combined.groupby(group_columns, sort=False))
     groups.reverse()
     x = np.arange(len(groups))
@@ -376,21 +550,71 @@ def plot_comparison_landscape(summary: pd.DataFrame, operational: pd.DataFrame, 
     ax.axhline(0.0, color="#6b7280", linewidth=0.8, zorder=0)
     for index, (_, group) in enumerate(groups):
         for adoption_scenario in ADOPTION_SCENARIOS:
-            row = group[group["adoption_scenario"] == adoption_scenario["name"]].iloc[0]
+            row = group[
+                group["adoption_scenario"] == adoption_scenario["name"]
+            ].iloc[0]
             scenario_x = index + float(adoption_scenario["offset"])
             color = str(adoption_scenario["color"])
-            ax.vlines(scenario_x, row["model_p05_pct"], row["model_p95_pct"], color=color, linewidth=1.5, zorder=2)
-            ax.scatter(scenario_x, row["model_median_pct"], color=color, marker=str(adoption_scenario["marker"]), s=24, zorder=3)
+            ax.vlines(
+                scenario_x,
+                row["model_p05_pct"],
+                row["model_p95_pct"],
+                color=color,
+                linewidth=1.5,
+                zorder=2,
+            )
+            ax.scatter(
+                scenario_x,
+                row["model_median_pct"],
+                color=color,
+                marker=str(adoption_scenario["marker"]),
+                s=24,
+                zorder=3,
+            )
         row = group.iloc[0]
         published = float(row["published_gain_pct"])
         marker = "s" if row["evidence_type"] == "vendor-reported" else "D"
-        if "published_low_pct" in row and pd.notna(row.get("published_low_pct")):
-            ax.errorbar(index, published, yerr=np.array([[published - float(row["published_low_pct"])], [float(row["published_high_pct"]) - published]]), fmt=marker, color="#b45309", capsize=2, zorder=4)
+        if "published_low_pct" in row and pd.notna(
+            row.get("published_low_pct")
+        ):
+            ax.errorbar(
+                index,
+                published,
+                yerr=np.array(
+                    [
+                        [published - float(row["published_low_pct"])],
+                        [float(row["published_high_pct"]) - published],
+                    ]
+                ),
+                fmt=marker,
+                color="#b45309",
+                capsize=2,
+                zorder=4,
+            )
         elif pd.notna(row.get("published_uncertainty_pct")):
-            ax.errorbar(index, published, yerr=float(row["published_uncertainty_pct"]), fmt=marker, color="#b45309", capsize=2, zorder=4)
+            ax.errorbar(
+                index,
+                published,
+                yerr=float(row["published_uncertainty_pct"]),
+                fmt=marker,
+                color="#b45309",
+                capsize=2,
+                zorder=4,
+            )
         else:
-            ax.scatter(index, published, marker=marker, color="#b45309", s=24, zorder=4)
-    profile_labels = {"administration_heavy": "admin.", "knowledge_worker_heavy": "knowledge", "software_engineering_heavy": "Software. Eng."}
+            ax.scatter(
+                index,
+                published,
+                marker=marker,
+                color="#b45309",
+                s=24,
+                zorder=4,
+            )
+    profile_labels = {
+        "administration_heavy": "admin.",
+        "knowledge_worker_heavy": "knowledge",
+        "software_engineering_heavy": "Software. Eng.",
+    }
     labels = [
         f"{row['year']} {profile_labels[row['profile']]}\n{str(row['publication']).split(' (')[0]}"
         for _, group in groups
@@ -402,19 +626,67 @@ def plot_comparison_landscape(summary: pd.DataFrame, operational: pd.DataFrame, 
     ax.tick_params(axis="y", labelsize=6)
     ax.grid(axis="y", alpha=0.25)
     handles = [
-        *[Line2D([0], [0], color=scenario["color"], marker=scenario["marker"], linewidth=1.5, markersize=4, label=scenario["label"]) for scenario in ADOPTION_SCENARIOS],
-        Line2D([0], [0], color="#b45309", marker="D", linestyle="None", markersize=4, label="Peer reviewed"),
-        Line2D([0], [0], color="#b45309", marker="s", linestyle="None", markersize=4, label="Vendor reported"),
+        *[
+            Line2D(
+                [0],
+                [0],
+                color=scenario["color"],
+                marker=scenario["marker"],
+                linewidth=1.5,
+                markersize=4,
+                label=scenario["label"],
+            )
+            for scenario in ADOPTION_SCENARIOS
+        ],
+        Line2D(
+            [0],
+            [0],
+            color="#b45309",
+            marker="D",
+            linestyle="None",
+            markersize=4,
+            label="Peer reviewed",
+        ),
+        Line2D(
+            [0],
+            [0],
+            color="#b45309",
+            marker="s",
+            linestyle="None",
+            markersize=4,
+            label="Vendor reported",
+        ),
     ]
-    for handle, label in zip(handles, ("All", "Innov.–early maj.", "Innov.+early adop.", "Innovators", "Peer reviewed", "Vendor")):
+    for handle, label in zip(
+        handles,
+        (
+            "All",
+            "Innov.–early maj.",
+            "Innov.+early adop.",
+            "Innovators",
+            "Peer reviewed",
+            "Vendor",
+        ),
+    ):
         handle.set_label(label)
-    ax.legend(handles=handles, loc="lower right", ncols=2, fontsize=4.8, frameon=True, framealpha=0.9, handlelength=1.0, borderpad=0.4)
+    ax.legend(
+        handles=handles,
+        loc="lower right",
+        ncols=2,
+        fontsize=4.8,
+        frameon=True,
+        framealpha=0.9,
+        handlelength=1.0,
+        borderpad=0.4,
+    )
     fig.subplots_adjust(left=0.10, right=0.99, bottom=0.38, top=0.90)
     fig.savefig(output_path, dpi=300)
     plt.close(fig)
 
 
-def plot_comparison_a4_full_width(summary: pd.DataFrame, operational: pd.DataFrame, output_path: Path) -> None:
+def plot_comparison_a4_full_width(
+    summary: pd.DataFrame, operational: pd.DataFrame, output_path: Path
+) -> None:
     """Write a compact A4-width comparison containing only All and Innovators."""
     scenarios = (ADOPTION_SCENARIOS[0], ADOPTION_SCENARIOS[3])
     summary = summary.copy()
@@ -422,33 +694,82 @@ def plot_comparison_a4_full_width(summary: pd.DataFrame, operational: pd.DataFra
     operational = operational.copy()
     operational["evidence_type"] = "vendor-reported"
     combined = pd.concat([summary, operational], ignore_index=True)
-    group_columns = ["year", "profile", "context", "publication", "evidence_type"]
+    group_columns = [
+        "year",
+        "profile",
+        "context",
+        "publication",
+        "evidence_type",
+    ]
     groups = list(combined.groupby(group_columns, sort=False))
     groups.reverse()
     x = np.arange(len(groups))
     fig, ax = plt.subplots(figsize=(7.25, 3.1))
-    ax.axhline(0.0, color="#6b7280", linewidth=.8, zorder=0)
-    offsets = (-.12, .12)
+    ax.axhline(0.0, color="#6b7280", linewidth=0.8, zorder=0)
+    offsets = (-0.12, 0.12)
     for index, (_, group) in enumerate(groups):
         for adoption_scenario, offset in zip(scenarios, offsets):
-            row = group[group["adoption_scenario"] == adoption_scenario["name"]].iloc[0]
+            row = group[
+                group["adoption_scenario"] == adoption_scenario["name"]
+            ].iloc[0]
             scenario_x = index + offset
             color = str(adoption_scenario["color"])
-            ax.vlines(scenario_x, row["model_p05_pct"], row["model_p95_pct"], color=color, linewidth=1.5, zorder=2)
-            ax.scatter(scenario_x, row["model_median_pct"], color=color,
-                marker=str(adoption_scenario["marker"]), s=24, zorder=3)
+            ax.vlines(
+                scenario_x,
+                row["model_p05_pct"],
+                row["model_p95_pct"],
+                color=color,
+                linewidth=1.5,
+                zorder=2,
+            )
+            ax.scatter(
+                scenario_x,
+                row["model_median_pct"],
+                color=color,
+                marker=str(adoption_scenario["marker"]),
+                s=24,
+                zorder=3,
+            )
         row = group.iloc[0]
         published = float(row["published_gain_pct"])
         marker = "s" if row["evidence_type"] == "vendor-reported" else "D"
-        if "published_low_pct" in row and pd.notna(row.get("published_low_pct")):
-            error = np.array([[published - float(row["published_low_pct"])],
-                              [float(row["published_high_pct"]) - published]])
-            ax.errorbar(index, published, yerr=error, fmt=marker, color="#b45309", capsize=2, zorder=4)
+        if "published_low_pct" in row and pd.notna(
+            row.get("published_low_pct")
+        ):
+            error = np.array(
+                [
+                    [published - float(row["published_low_pct"])],
+                    [float(row["published_high_pct"]) - published],
+                ]
+            )
+            ax.errorbar(
+                index,
+                published,
+                yerr=error,
+                fmt=marker,
+                color="#b45309",
+                capsize=2,
+                zorder=4,
+            )
         elif pd.notna(row.get("published_uncertainty_pct")):
-            ax.errorbar(index, published, yerr=float(row["published_uncertainty_pct"]),
-                fmt=marker, color="#b45309", capsize=2, zorder=4)
+            ax.errorbar(
+                index,
+                published,
+                yerr=float(row["published_uncertainty_pct"]),
+                fmt=marker,
+                color="#b45309",
+                capsize=2,
+                zorder=4,
+            )
         else:
-            ax.scatter(index, published, marker=marker, color="#b45309", s=24, zorder=4)
+            ax.scatter(
+                index,
+                published,
+                marker=marker,
+                color="#b45309",
+                s=24,
+                zorder=4,
+            )
     profile_labels = {
         "administration_heavy": "Admin.",
         "knowledge_worker_heavy": "Knowledge",
@@ -462,17 +783,50 @@ def plot_comparison_a4_full_width(summary: pd.DataFrame, operational: pd.DataFra
     ax.set_xticks(x, labels, rotation=35, ha="right", fontsize=7.5)
     ax.set_ylabel("Workforce-wide annualized\nAI gain (%)", fontsize=9)
     ax.tick_params(axis="y", labelsize=8)
-    ax.grid(axis="y", alpha=.25)
+    ax.grid(axis="y", alpha=0.25)
     handles = [
-        *[Line2D([0], [0], color=scenario["color"], marker=scenario["marker"],
-                 linewidth=1.5, markersize=4, label=label)
-          for scenario, label in zip(scenarios, ("All", "Innovators"))],
-        Line2D([0], [0], color="#b45309", marker="D", linestyle="None", markersize=4, label="Peer reviewed"),
-        Line2D([0], [0], color="#b45309", marker="s", linestyle="None", markersize=4, label="Vendor reported"),
+        *[
+            Line2D(
+                [0],
+                [0],
+                color=scenario["color"],
+                marker=scenario["marker"],
+                linewidth=1.5,
+                markersize=4,
+                label=label,
+            )
+            for scenario, label in zip(scenarios, ("All", "Innovators"))
+        ],
+        Line2D(
+            [0],
+            [0],
+            color="#b45309",
+            marker="D",
+            linestyle="None",
+            markersize=4,
+            label="Peer reviewed",
+        ),
+        Line2D(
+            [0],
+            [0],
+            color="#b45309",
+            marker="s",
+            linestyle="None",
+            markersize=4,
+            label="Vendor reported",
+        ),
     ]
-    ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(.5, 1.18), ncols=4,
-        fontsize=7.5, frameon=False, handlelength=1.2, columnspacing=1.4)
-    fig.subplots_adjust(left=.15, right=.995, bottom=.43, top=.80)
+    ax.legend(
+        handles=handles,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.18),
+        ncols=4,
+        fontsize=7.5,
+        frameon=False,
+        handlelength=1.2,
+        columnspacing=1.4,
+    )
+    fig.subplots_adjust(left=0.15, right=0.995, bottom=0.43, top=0.80)
     fig.savefig(output_path, dpi=300)
     plt.close(fig)
 
@@ -489,29 +843,68 @@ def main() -> None:
     case_summaries: dict[tuple[int, str, str], pd.DataFrame] = {}
     for case in VALIDATION_CASES:
         for adoption_scenario in ADOPTION_SCENARIOS:
-            print(f"Running {case['year']} {case['profile']} ({case['context']}; {adoption_scenario['name']})", flush=True)
+            print(
+                f"Running {case['year']} {case['profile']} ({case['context']}; {adoption_scenario['name']})",
+                flush=True,
+            )
             summary, runs = run_case(case, adoption_scenario, args)
             case_id = f"{case['year']}_{case['profile']}_{case['context']}_{adoption_scenario['name']}"
             runs["case_id"] = case_id
             runs["adoption_scenario"] = adoption_scenario["name"]
             summaries.append(summary)
             run_frames.append(runs)
-            case_summaries[(int(case["year"]), str(case["profile"]), str(case["context"]), str(adoption_scenario["name"]))] = summary
+            case_summaries[
+                (
+                    int(case["year"]),
+                    str(case["profile"]),
+                    str(case["context"]),
+                    str(adoption_scenario["name"]),
+                )
+            ] = summary
     comparison = pd.concat(summaries, ignore_index=True)
     operational_rows = []
     for case in OPERATIONAL_CASES:
         for adoption_scenario in ADOPTION_SCENARIOS:
-            source = case_summaries[(int(case["year"]), str(case["profile"]), str(case["context"]), str(adoption_scenario["name"]))].iloc[0].to_dict()
+            source = (
+                case_summaries[
+                    (
+                        int(case["year"]),
+                        str(case["profile"]),
+                        str(case["context"]),
+                        str(adoption_scenario["name"]),
+                    )
+                ]
+                .iloc[0]
+                .to_dict()
+            )
             source.update(case)
             source["adoption_scenario"] = adoption_scenario["name"]
             operational_rows.append(source)
     operational = pd.DataFrame(operational_rows)
-    comparison.to_csv(args.output_dir / "published_gain_comparison.csv", index=False)
-    operational.to_csv(args.output_dir / "operational_case_comparison.csv", index=False)
-    pd.concat(run_frames, ignore_index=True).to_csv(args.output_dir / "validation_run_level_results.csv", index=False)
-    plot_comparison(comparison, operational, args.output_dir / "published_gain_comparison.png")
-    plot_comparison_landscape(comparison, operational, args.output_dir / "published_gain_comparison_landscape.png")
-    plot_comparison_a4_full_width(comparison, operational, args.output_dir / "published_gain_comparison_a4_full_width.png")
+    comparison.to_csv(
+        args.output_dir / "published_gain_comparison.csv", index=False
+    )
+    operational.to_csv(
+        args.output_dir / "operational_case_comparison.csv", index=False
+    )
+    pd.concat(run_frames, ignore_index=True).to_csv(
+        args.output_dir / "validation_run_level_results.csv", index=False
+    )
+    plot_comparison(
+        comparison,
+        operational,
+        args.output_dir / "published_gain_comparison.png",
+    )
+    plot_comparison_landscape(
+        comparison,
+        operational,
+        args.output_dir / "published_gain_comparison_landscape.png",
+    )
+    plot_comparison_a4_full_width(
+        comparison,
+        operational,
+        args.output_dir / "published_gain_comparison_a4_full_width.png",
+    )
     print(f"Wrote validation comparison to {args.output_dir}")
 
 

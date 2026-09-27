@@ -14,7 +14,6 @@ import tempfile
 from collections import defaultdict
 from pathlib import Path
 
-
 SELECTIONS = ("low_risk", "optimum", "high_return")
 SERVICE_ORDER = ("Global cloud", "EU cloud", "On-prem OSS", "Cloud OSS")
 SERVICE_COLORS = {
@@ -29,9 +28,21 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("sweep_folder", type=Path)
     parser.add_argument("--output-dir", type=Path)
-    parser.add_argument("--png", action="store_true", help="Render each HTML diagram to PNG using Playwright or headless Firefox.")
-    parser.add_argument("--show-bracket-composition", action="store_true", help="Split each service node into employee-bracket share segments.")
-    parser.add_argument("--show-organization-composition", action="store_true", help="Split each service node into organization-profile share segments.")
+    parser.add_argument(
+        "--png",
+        action="store_true",
+        help="Render each HTML diagram to PNG using Playwright or headless Firefox.",
+    )
+    parser.add_argument(
+        "--show-bracket-composition",
+        action="store_true",
+        help="Split each service node into employee-bracket share segments.",
+    )
+    parser.add_argument(
+        "--show-organization-composition",
+        action="store_true",
+        help="Split each service node into organization-profile share segments.",
+    )
     return parser.parse_args()
 
 
@@ -39,7 +50,9 @@ def periods_for(months: list[float], resolution: str) -> list[float]:
     months = sorted(set(months))
     if resolution == "monthly":
         if any(right - left != 1 for left, right in zip(months, months[1:])):
-            raise SystemExit("Monthly D3 Sankeys require sweep output at one-month intervals; rerun with resolution_months: 1.")
+            raise SystemExit(
+                "Monthly D3 Sankeys require sweep output at one-month intervals; rerun with resolution_months: 1."
+            )
         return months
     step = 3 if resolution == "quarterly" else 12
     periods = [month for month in months if month % step == 0]
@@ -56,7 +69,9 @@ def load_selections(path: Path) -> list[dict[str, object]]:
     required = {"selection", "company_profile", "users", "month", "service"}
     missing = required - set(rows[0])
     if missing:
-        raise SystemExit(f"Selection CSV is missing columns: {', '.join(sorted(missing))}.")
+        raise SystemExit(
+            f"Selection CSV is missing columns: {', '.join(sorted(missing))}."
+        )
     for row in rows:
         row["month"] = float(row["month"])
         row["users"] = int(float(row["users"]))
@@ -65,19 +80,42 @@ def load_selections(path: Path) -> list[dict[str, object]]:
     return rows
 
 
-def build_panel(rows: list[dict[str, object]], selection: str, periods: list[float]) -> dict[str, object]:
-    selected = [row for row in rows if row["selection"] == selection and row["month"] in periods]
+def build_panel(
+    rows: list[dict[str, object]], selection: str, periods: list[float]
+) -> dict[str, object]:
+    selected = [
+        row
+        for row in rows
+        if row["selection"] == selection and row["month"] in periods
+    ]
     combinations = sorted({str(row["combo_key"]) for row in rows})
-    by_combo_month = {(str(row["combo_key"]), float(row["month"])): str(row["service"]) for row in selected}
+    by_combo_month = {
+        (str(row["combo_key"]), float(row["month"])): str(row["service"])
+        for row in selected
+    }
     expected = len(combinations)
-    if any((combo, month) not in by_combo_month for combo in combinations for month in periods):
-        raise SystemExit(f"Incomplete {selection} selections; cannot form constant-N D3 Sankey flows.")
+    if any(
+        (combo, month) not in by_combo_month
+        for combo in combinations
+        for month in periods
+    ):
+        raise SystemExit(
+            f"Incomplete {selection} selections; cannot form constant-N D3 Sankey flows."
+        )
 
-    bracket_counts: dict[tuple[float, str], dict[int, int]] = defaultdict(lambda: defaultdict(int))
-    organization_counts: dict[tuple[float, str], dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    bracket_counts: dict[tuple[float, str], dict[int, int]] = defaultdict(
+        lambda: defaultdict(int)
+    )
+    organization_counts: dict[tuple[float, str], dict[str, int]] = defaultdict(
+        lambda: defaultdict(int)
+    )
     for row in selected:
-        bracket_counts[(float(row["month"]), str(row["service"]))][int(row["users"])] += 1
-        organization_counts[(float(row["month"]), str(row["service"]))][str(row["company_profile"])] += 1
+        bracket_counts[(float(row["month"]), str(row["service"]))][
+            int(row["users"])
+        ] += 1
+        organization_counts[(float(row["month"]), str(row["service"]))][
+            str(row["company_profile"])
+        ] += 1
     nodes = []
     for month in periods:
         for rank, service in enumerate(SERVICE_ORDER):
@@ -97,7 +135,9 @@ def build_panel(rows: list[dict[str, object]], selection: str, periods: list[flo
                     ],
                     "organizations": [
                         {"name": name, "share": count / total}
-                        for name, count in sorted(organization_counts[(month, service)].items())
+                        for name, count in sorted(
+                            organization_counts[(month, service)].items()
+                        )
                     ],
                 }
             )
@@ -105,11 +145,22 @@ def build_panel(rows: list[dict[str, object]], selection: str, periods: list[flo
     for source_month, target_month in zip(periods, periods[1:]):
         counts: dict[tuple[str, str], int] = defaultdict(int)
         for combo in combinations:
-            counts[(by_combo_month[(combo, source_month)], by_combo_month[(combo, target_month)])] += 1
+            counts[
+                (
+                    by_combo_month[(combo, source_month)],
+                    by_combo_month[(combo, target_month)],
+                )
+            ] += 1
         if sum(counts.values()) != expected:
-            raise SystemExit(f"{selection} D3 Sankey flow total is not constant at {expected} combinations.")
+            raise SystemExit(
+                f"{selection} D3 Sankey flow total is not constant at {expected} combinations."
+            )
         for (source_service, target_service), value in sorted(
-            counts.items(), key=lambda item: (SERVICE_ORDER.index(item[0][0]), SERVICE_ORDER.index(item[0][1]))
+            counts.items(),
+            key=lambda item: (
+                SERVICE_ORDER.index(item[0][0]),
+                SERVICE_ORDER.index(item[0][1]),
+            ),
         ):
             links.append(
                 {
@@ -122,7 +173,14 @@ def build_panel(rows: list[dict[str, object]], selection: str, periods: list[flo
             )
     returns = []
     base_resolution = min(
-        (right - left for left, right in zip(sorted({float(row["month"]) for row in rows}), sorted({float(row["month"]) for row in rows})[1:]) if right > left),
+        (
+            right - left
+            for left, right in zip(
+                sorted({float(row["month"]) for row in rows}),
+                sorted({float(row["month"]) for row in rows})[1:],
+            )
+            if right > left
+        ),
         default=1.0,
     )
     for month in periods:
@@ -130,7 +188,9 @@ def build_panel(rows: list[dict[str, object]], selection: str, periods: list[flo
             observations = [
                 (1.0 + float(row["reward"])) ** (12.0 / base_resolution) - 1.0
                 for row in selected
-                if float(row["month"]) == month and row["service"] == service and float(row["reward"]) > -1.0
+                if float(row["month"]) == month
+                and row["service"] == service
+                and float(row["reward"]) > -1.0
             ]
             if observations:
                 returns.append(
@@ -138,10 +198,19 @@ def build_panel(rows: list[dict[str, object]], selection: str, periods: list[flo
                         "month": month,
                         "service": service,
                         "medianReturn": statistics.median(observations),
-                        "sigmaReturn": statistics.stdev(observations) if len(observations) > 1 else 0.0,
+                        "sigmaReturn": (
+                            statistics.stdev(observations)
+                            if len(observations) > 1
+                            else 0.0
+                        ),
                     }
                 )
-    return {"nodes": nodes, "links": links, "returns": returns, "population": expected}
+    return {
+        "nodes": nodes,
+        "links": links,
+        "returns": returns,
+        "population": expected,
+    }
 
 
 def write_html(
@@ -276,7 +345,9 @@ def render_png(html_path: Path, png_path: Path) -> bool:
 
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
-            page = browser.new_page(viewport={"width": 2400, "height": 1100}, device_scale_factor=1)
+            page = browser.new_page(
+                viewport={"width": 2400, "height": 1100}, device_scale_factor=1
+            )
             page.goto(html_path.resolve().as_uri(), wait_until="networkidle")
             page.screenshot(path=str(png_path), full_page=True)
             browser.close()
@@ -287,10 +358,23 @@ def render_png(html_path: Path, png_path: Path) -> bool:
     firefox = shutil.which("firefox")
     if firefox is None:
         return False
-    with tempfile.TemporaryDirectory(prefix="d3-sankey-firefox-") as profile_dir:
+    with tempfile.TemporaryDirectory(
+        prefix="d3-sankey-firefox-"
+    ) as profile_dir:
         try:
             result = subprocess.run(
-                [firefox, "--headless", "--no-remote", "-profile", profile_dir, "--screenshot", str(png_path), "--window-size", "2400,1100", html_path.resolve().as_uri()],
+                [
+                    firefox,
+                    "--headless",
+                    "--no-remote",
+                    "-profile",
+                    profile_dir,
+                    "--screenshot",
+                    str(png_path),
+                    "--window-size",
+                    "2400,1100",
+                    html_path.resolve().as_uri(),
+                ],
                 check=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -313,10 +397,24 @@ def main() -> None:
             continue
         for selection in SELECTIONS:
             panel_data = build_panel(rows, selection, periods)
-            html_path = output_dir / f"horizon_service_transition_sankey_d3_{resolution}_{selection}.html"
-            write_html(html_path, resolution, selection, panel_data, args.show_bracket_composition, args.show_organization_composition)
-            if args.png and not render_png(html_path, html_path.with_suffix(".png")):
-                print(f"Warning: could not render {html_path.name} to PNG; install Playwright or Firefox.")
+            html_path = (
+                output_dir
+                / f"horizon_service_transition_sankey_d3_{resolution}_{selection}.html"
+            )
+            write_html(
+                html_path,
+                resolution,
+                selection,
+                panel_data,
+                args.show_bracket_composition,
+                args.show_organization_composition,
+            )
+            if args.png and not render_png(
+                html_path, html_path.with_suffix(".png")
+            ):
+                print(
+                    f"Warning: could not render {html_path.name} to PNG; install Playwright or Firefox."
+                )
     print(f"Wrote D3 Sankey diagrams to {output_dir}")
 
 

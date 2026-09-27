@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import argparse
 import os
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import (
+    ProcessPoolExecutor, ThreadPoolExecutor, as_completed)
 from pathlib import Path
 
 os.environ.setdefault("MPLCONFIGDIR", str(Path.cwd() / ".mplconfig"))
@@ -15,24 +16,16 @@ import matplotlib
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
+import matplotlib.tri as mtri
 import numpy as np
 import pandas as pd
-import matplotlib.tri as mtri
 from tqdm.auto import tqdm
 
 from simulate_llm_efficiency import (
-    HARDWARE_CALIBRATIONS,
-    HARDWARE_SCENARIOS,
-    SimulationConfig,
-    SIMULATION_DEFAULTS,
-    SWEEP_DEFAULTS,
-    _hardware_calibration_profile,
-    configuration_path_from_argv,
-    load_simulation_configuration,
-    _resolve_backend,
-    run_simulation,
-    summarize,
-)
+    HARDWARE_CALIBRATIONS, HARDWARE_SCENARIOS, SIMULATION_DEFAULTS,
+    SWEEP_DEFAULTS, SimulationConfig, _hardware_calibration_profile,
+    _resolve_backend, configuration_path_from_argv,
+    load_simulation_configuration, run_simulation, summarize)
 
 
 def parse_employee_mix(mix_arg: str | None) -> dict[str, float] | None:
@@ -47,19 +40,31 @@ def parse_employee_mix(mix_arg: str | None) -> dict[str, float] | None:
 
 
 def budget_pairs(args: argparse.Namespace) -> list[tuple[float, float]]:
-    service_values = np.linspace(args.service_budget_min_usd, args.service_budget_max_usd, args.service_budget_points)
-    hardware_values = np.linspace(args.hardware_budget_min_usd, args.hardware_budget_max_usd, args.hardware_budget_points)
+    service_values = np.linspace(
+        args.service_budget_min_usd,
+        args.service_budget_max_usd,
+        args.service_budget_points,
+    )
+    hardware_values = np.linspace(
+        args.hardware_budget_min_usd,
+        args.hardware_budget_max_usd,
+        args.hardware_budget_points,
+    )
     pairs = []
     for service_budget in service_values:
         for hardware_budget in hardware_values:
-            lifetime_budget = service_budget * 12.0 * args.years + hardware_budget
+            lifetime_budget = (
+                service_budget * 12.0 * args.years + hardware_budget
+            )
             if lifetime_budget <= args.total_budget_usd + 1e-9:
                 pairs.append((float(service_budget), float(hardware_budget)))
     return pairs
 
 
 def efficient_frontier(final_summary: pd.DataFrame) -> pd.DataFrame:
-    points = final_summary.sort_values(["risk_mean", "return_rate_mean"], ascending=[True, False]).copy()
+    points = final_summary.sort_values(
+        ["risk_mean", "return_rate_mean"], ascending=[True, False]
+    ).copy()
     frontier_rows = []
     best_return = -np.inf
     for _, row in points.iterrows():
@@ -70,30 +75,50 @@ def efficient_frontier(final_summary: pd.DataFrame) -> pd.DataFrame:
 
 
 def frontier_line(frontier: pd.DataFrame) -> pd.DataFrame:
-    frontier = frontier.sort_values("risk_mean").drop_duplicates(subset=["risk_mean"], keep="last")
+    frontier = frontier.sort_values("risk_mean").drop_duplicates(
+        subset=["risk_mean"], keep="last"
+    )
     if len(frontier) <= 1:
         return frontier[["risk_mean", "return_rate_mean"]].copy()
 
-    dense_risk = np.linspace(float(frontier["risk_mean"].min()), float(frontier["risk_mean"].max()), 80)
-    dense_return = np.interp(dense_risk, frontier["risk_mean"], frontier["return_rate_mean"])
-    return pd.DataFrame({"risk_mean": dense_risk, "return_rate_mean": dense_return})
+    dense_risk = np.linspace(
+        float(frontier["risk_mean"].min()),
+        float(frontier["risk_mean"].max()),
+        80,
+    )
+    dense_return = np.interp(
+        dense_risk, frontier["risk_mean"], frontier["return_rate_mean"]
+    )
+    return pd.DataFrame(
+        {"risk_mean": dense_risk, "return_rate_mean": dense_return}
+    )
 
 
 def _finite_panel(panel: pd.DataFrame, metric: str) -> pd.DataFrame:
-    mask = np.isfinite(panel["service_budget_usd"]) & np.isfinite(panel["hardware_budget_usd"]) & np.isfinite(panel[metric])
+    mask = (
+        np.isfinite(panel["service_budget_usd"])
+        & np.isfinite(panel["hardware_budget_usd"])
+        & np.isfinite(panel[metric])
+    )
     return panel.loc[mask].copy()
 
 
 def _load_selection_summary(output_dir: Path) -> pd.DataFrame:
     selections_path = output_dir / "budget_frontier_selections.csv"
     if not selections_path.exists():
-        raise SystemExit(f"Missing selection summary for replot: {selections_path}")
+        raise SystemExit(
+            f"Missing selection summary for replot: {selections_path}"
+        )
     return _prepare_selection_summary(pd.read_csv(selections_path))
 
 
-def _shared_budget_limits(selection_summary: pd.DataFrame) -> tuple[tuple[float, float] | None, tuple[float, float] | None]:
+def _shared_budget_limits(
+    selection_summary: pd.DataFrame,
+) -> tuple[tuple[float, float] | None, tuple[float, float] | None]:
     x = pd.to_numeric(selection_summary["service_budget_usd"], errors="coerce")
-    y = pd.to_numeric(selection_summary["hardware_budget_usd"], errors="coerce")
+    y = pd.to_numeric(
+        selection_summary["hardware_budget_usd"], errors="coerce"
+    )
     x = x[np.isfinite(x)]
     y = y[np.isfinite(y)]
     if x.empty or y.empty:
@@ -110,7 +135,9 @@ def _shared_budget_limits(selection_summary: pd.DataFrame) -> tuple[tuple[float,
     return (xmin, xmax), (ymin, ymax)
 
 
-def _infer_budget_constraint(selection_summary: pd.DataFrame) -> tuple[float | None, float | None]:
+def _infer_budget_constraint(
+    selection_summary: pd.DataFrame,
+) -> tuple[float | None, float | None]:
     if "total_lifetime_budget_usd" not in selection_summary:
         return None, None
 
@@ -118,7 +145,13 @@ def _infer_budget_constraint(selection_summary: pd.DataFrame) -> tuple[float | N
         np.isfinite(selection_summary["service_budget_usd"])
         & np.isfinite(selection_summary["hardware_budget_usd"])
         & np.isfinite(selection_summary["total_lifetime_budget_usd"])
-    ][["service_budget_usd", "hardware_budget_usd", "total_lifetime_budget_usd"]].drop_duplicates()
+    ][
+        [
+            "service_budget_usd",
+            "hardware_budget_usd",
+            "total_lifetime_budget_usd",
+        ]
+    ].drop_duplicates()
     if finite.empty:
         return None, None
 
@@ -130,31 +163,44 @@ def _infer_budget_constraint(selection_summary: pd.DataFrame) -> tuple[float | N
             continue
         first = group.iloc[0]
         last = group.iloc[-1]
-        delta_service = float(last["service_budget_usd"] - first["service_budget_usd"])
+        delta_service = float(
+            last["service_budget_usd"] - first["service_budget_usd"]
+        )
         if abs(delta_service) <= 1e-12:
             continue
-        delta_total = float(last["total_lifetime_budget_usd"] - first["total_lifetime_budget_usd"])
+        delta_total = float(
+            last["total_lifetime_budget_usd"]
+            - first["total_lifetime_budget_usd"]
+        )
         years = delta_total / (12.0 * delta_service)
         break
     return total_budget_usd, years
 
 
-def _prepare_selection_summary(selection_summary: pd.DataFrame) -> pd.DataFrame:
+def _prepare_selection_summary(
+    selection_summary: pd.DataFrame,
+) -> pd.DataFrame:
     selection_summary = selection_summary.copy()
     if "delivered_usage_share_mean" not in selection_summary:
         selection_summary["delivered_usage_share_mean"] = np.nan
     if "unserved_work_share_mean" not in selection_summary:
-        selection_summary["unserved_work_share_mean"] = 1.0 - selection_summary["delivered_usage_share_mean"]
+        selection_summary["unserved_work_share_mean"] = (
+            1.0 - selection_summary["delivered_usage_share_mean"]
+        )
     if "return_rate_adjusted_mean" not in selection_summary:
         selection_summary["return_rate_adjusted_mean"] = (
-            selection_summary["return_rate_mean"] * selection_summary["delivered_usage_share_mean"]
+            selection_summary["return_rate_mean"]
+            * selection_summary["delivered_usage_share_mean"]
         )
     return selection_summary
 
 
 def _plot_panel_specs() -> list[tuple[str, str]]:
     return [
-        ("return_rate_adjusted_mean", "Return Rate Adjusted For Unserved Work"),
+        (
+            "return_rate_adjusted_mean",
+            "Return Rate Adjusted For Unserved Work",
+        ),
         ("risk_mean", "Risk"),
         ("mean_efficiency_gain_mean", "Mean Efficiency Gain"),
         ("delivered_usage_share_mean", "Delivered Usage Share"),
@@ -169,7 +215,13 @@ def _overlay_budget_exceeded_region(
     total_budget_usd: float | None,
     years: float | None,
 ) -> None:
-    if xlim is None or ylim is None or total_budget_usd is None or years is None or years <= 0.0:
+    if (
+        xlim is None
+        or ylim is None
+        or total_budget_usd is None
+        or years is None
+        or years <= 0.0
+    ):
         return
 
     x = np.linspace(xlim[0], xlim[1], 512)
@@ -191,7 +243,9 @@ def _overlay_budget_exceeded_region(
         linewidth=0.0,
         zorder=4,
     )
-    ax.plot(x, boundary, color="#666666", linestyle="--", linewidth=1.0, zorder=5)
+    ax.plot(
+        x, boundary, color="#666666", linestyle="--", linewidth=1.0, zorder=5
+    )
 
     visible_x = x[visible]
     visible_y = np.clip(boundary[visible], ylim[0], ylim[1])
@@ -205,20 +259,30 @@ def _overlay_budget_exceeded_region(
         va="center",
         fontsize=9,
         color="#444444",
-        bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.8, "pad": 2.0},
+        bbox={
+            "facecolor": "white",
+            "edgecolor": "none",
+            "alpha": 0.8,
+            "pad": 2.0,
+        },
         zorder=6,
     )
 
 
-def _prepare_frontier_timeseries(frontier_timeseries: pd.DataFrame) -> pd.DataFrame:
+def _prepare_frontier_timeseries(
+    frontier_timeseries: pd.DataFrame,
+) -> pd.DataFrame:
     frontier_timeseries = frontier_timeseries.copy()
     if "delivered_usage_share_mean" not in frontier_timeseries:
         frontier_timeseries["delivered_usage_share_mean"] = np.nan
     if "unserved_work_share_mean" not in frontier_timeseries:
-        frontier_timeseries["unserved_work_share_mean"] = 1.0 - frontier_timeseries["delivered_usage_share_mean"]
+        frontier_timeseries["unserved_work_share_mean"] = (
+            1.0 - frontier_timeseries["delivered_usage_share_mean"]
+        )
     if "return_rate_adjusted_mean" not in frontier_timeseries:
         frontier_timeseries["return_rate_adjusted_mean"] = (
-            frontier_timeseries["return_rate_mean"] * frontier_timeseries["delivered_usage_share_mean"]
+            frontier_timeseries["return_rate_mean"]
+            * frontier_timeseries["delivered_usage_share_mean"]
         )
     return frontier_timeseries
 
@@ -261,14 +325,22 @@ def evaluate_budget_pair(
 
     results = run_simulation(config)
     summary = summarize(results)
-    final_summary = summary[summary["period"] == summary["period"].max()].copy()
+    final_summary = summary[
+        summary["period"] == summary["period"].max()
+    ].copy()
     frontier = efficient_frontier(final_summary)
     frontier_fit = frontier_line(frontier)
     frontier_scenarios = frontier["scenario"].unique().tolist()
-    frontier_timeseries = summary[summary["scenario"].isin(frontier_scenarios)].copy()
+    frontier_timeseries = summary[
+        summary["scenario"].isin(frontier_scenarios)
+    ].copy()
 
-    low_risk = frontier.sort_values(["risk_mean", "return_rate_mean"], ascending=[True, False]).iloc[0]
-    high_return = frontier.sort_values(["return_rate_mean", "risk_mean"], ascending=[False, True]).iloc[0]
+    low_risk = frontier.sort_values(
+        ["risk_mean", "return_rate_mean"], ascending=[True, False]
+    ).iloc[0]
+    high_return = frontier.sort_values(
+        ["return_rate_mean", "risk_mean"], ascending=[False, True]
+    ).iloc[0]
 
     selection_rows = pd.DataFrame(
         [
@@ -276,37 +348,77 @@ def evaluate_budget_pair(
                 "selection": "low_risk",
                 "service_budget_usd": service_budget_usd,
                 "hardware_budget_usd": hardware_budget_usd,
-                "total_lifetime_budget_usd": service_budget_usd * 12.0 * config.years + hardware_budget_usd,
+                "total_lifetime_budget_usd": service_budget_usd
+                * 12.0
+                * config.years
+                + hardware_budget_usd,
                 "scenario": low_risk["scenario"],
                 "local_fallback": low_risk["local_fallback"],
                 "risk_mean": float(low_risk["risk_mean"]),
                 "return_rate_mean": float(low_risk["return_rate_mean"]),
-                "return_rate_adjusted_mean": float(low_risk["return_rate_mean"] * low_risk["delivered_usage_share_mean"]),
-                "mean_efficiency_gain_mean": float(low_risk["mean_efficiency_gain_mean"]),
-                "delivered_usage_share_mean": float(low_risk["delivered_usage_share_mean"]),
-                "unserved_work_share_mean": float(1.0 - low_risk["delivered_usage_share_mean"]),
-                "confidential_usage_share_mean": float(low_risk["confidential_usage_share_mean"]),
-                "hardware_budget_feasible_mean": float(low_risk["hardware_budget_feasible_mean"]),
-                "hardware_budget_scale_mean": float(low_risk["hardware_budget_scale_mean"]),
-                "service_budget_scale_mean": float(low_risk["service_budget_scale_mean"]),
+                "return_rate_adjusted_mean": float(
+                    low_risk["return_rate_mean"]
+                    * low_risk["delivered_usage_share_mean"]
+                ),
+                "mean_efficiency_gain_mean": float(
+                    low_risk["mean_efficiency_gain_mean"]
+                ),
+                "delivered_usage_share_mean": float(
+                    low_risk["delivered_usage_share_mean"]
+                ),
+                "unserved_work_share_mean": float(
+                    1.0 - low_risk["delivered_usage_share_mean"]
+                ),
+                "confidential_usage_share_mean": float(
+                    low_risk["confidential_usage_share_mean"]
+                ),
+                "hardware_budget_feasible_mean": float(
+                    low_risk["hardware_budget_feasible_mean"]
+                ),
+                "hardware_budget_scale_mean": float(
+                    low_risk["hardware_budget_scale_mean"]
+                ),
+                "service_budget_scale_mean": float(
+                    low_risk["service_budget_scale_mean"]
+                ),
             },
             {
                 "selection": "high_return",
                 "service_budget_usd": service_budget_usd,
                 "hardware_budget_usd": hardware_budget_usd,
-                "total_lifetime_budget_usd": service_budget_usd * 12.0 * config.years + hardware_budget_usd,
+                "total_lifetime_budget_usd": service_budget_usd
+                * 12.0
+                * config.years
+                + hardware_budget_usd,
                 "scenario": high_return["scenario"],
                 "local_fallback": high_return["local_fallback"],
                 "risk_mean": float(high_return["risk_mean"]),
                 "return_rate_mean": float(high_return["return_rate_mean"]),
-                "return_rate_adjusted_mean": float(high_return["return_rate_mean"] * high_return["delivered_usage_share_mean"]),
-                "mean_efficiency_gain_mean": float(high_return["mean_efficiency_gain_mean"]),
-                "delivered_usage_share_mean": float(high_return["delivered_usage_share_mean"]),
-                "unserved_work_share_mean": float(1.0 - high_return["delivered_usage_share_mean"]),
-                "confidential_usage_share_mean": float(high_return["confidential_usage_share_mean"]),
-                "hardware_budget_feasible_mean": float(high_return["hardware_budget_feasible_mean"]),
-                "hardware_budget_scale_mean": float(high_return["hardware_budget_scale_mean"]),
-                "service_budget_scale_mean": float(high_return["service_budget_scale_mean"]),
+                "return_rate_adjusted_mean": float(
+                    high_return["return_rate_mean"]
+                    * high_return["delivered_usage_share_mean"]
+                ),
+                "mean_efficiency_gain_mean": float(
+                    high_return["mean_efficiency_gain_mean"]
+                ),
+                "delivered_usage_share_mean": float(
+                    high_return["delivered_usage_share_mean"]
+                ),
+                "unserved_work_share_mean": float(
+                    1.0 - high_return["delivered_usage_share_mean"]
+                ),
+                "confidential_usage_share_mean": float(
+                    high_return["confidential_usage_share_mean"]
+                ),
+                "hardware_budget_feasible_mean": float(
+                    high_return["hardware_budget_feasible_mean"]
+                ),
+                "hardware_budget_scale_mean": float(
+                    high_return["hardware_budget_scale_mean"]
+                ),
+                "service_budget_scale_mean": float(
+                    high_return["service_budget_scale_mean"]
+                ),
             },
         ]
     )
@@ -314,7 +426,8 @@ def evaluate_budget_pair(
     budget_meta = {
         "service_budget_usd": service_budget_usd,
         "hardware_budget_usd": hardware_budget_usd,
-        "total_lifetime_budget_usd": service_budget_usd * 12.0 * config.years + hardware_budget_usd,
+        "total_lifetime_budget_usd": service_budget_usd * 12.0 * config.years
+        + hardware_budget_usd,
     }
     frontier = frontier.assign(
         line_type="frontier_point",
@@ -326,13 +439,19 @@ def evaluate_budget_pair(
         hardware_budget_usd=hardware_budget_usd,
         total_lifetime_budget_usd=budget_meta["total_lifetime_budget_usd"],
     )
-    frontier_output = pd.concat([frontier, frontier_fit], ignore_index=True, sort=False)
+    frontier_output = pd.concat(
+        [frontier, frontier_fit], ignore_index=True, sort=False
+    )
     frontier_timeseries = frontier_timeseries.assign(
         service_budget_usd=service_budget_usd,
         hardware_budget_usd=hardware_budget_usd,
         total_lifetime_budget_usd=budget_meta["total_lifetime_budget_usd"],
     )
-    return _prepare_selection_summary(selection_rows), frontier_output, _prepare_frontier_timeseries(frontier_timeseries)
+    return (
+        _prepare_selection_summary(selection_rows),
+        frontier_output,
+        _prepare_frontier_timeseries(frontier_timeseries),
+    )
 
 
 def _plot_budget_matrix(
@@ -345,12 +464,17 @@ def _plot_budget_matrix(
 ) -> None:
     selection_summary = _prepare_selection_summary(selection_summary)
     if total_budget_usd is None or years is None:
-        inferred_total_budget_usd, inferred_years = _infer_budget_constraint(selection_summary)
+        inferred_total_budget_usd, inferred_years = _infer_budget_constraint(
+            selection_summary
+        )
         if total_budget_usd is None:
             total_budget_usd = inferred_total_budget_usd
         if years is None:
             years = inferred_years
-    selections = [("low_risk", "Low-Risk Frontier"), ("high_return", "High-Return Frontier")]
+    selections = [
+        ("low_risk", "Low-Risk Frontier"),
+        ("high_return", "High-Return Frontier"),
+    ]
     metrics = _plot_panel_specs()
     if transpose:
         rows = len(metrics)
@@ -376,7 +500,10 @@ def _plot_budget_matrix(
                 metric, metric_title = metrics[col_idx]
 
             title_suffix = "Contours" if contours else "Grid"
-            panel = _finite_panel(selection_summary[selection_summary["selection"] == selection], metric)
+            panel = _finite_panel(
+                selection_summary[selection_summary["selection"] == selection],
+                metric,
+            )
             ax.set_title(f"{selection_title}: {metric_title} {title_suffix}")
             ax.set_xlabel("Monthly service budget (USD)")
             ax.set_ylabel("Upfront hardware budget (USD)")
@@ -385,15 +512,32 @@ def _plot_budget_matrix(
                 ax.set_ylim(*ylim)
 
             if contours:
-                unique_points = panel[["service_budget_usd", "hardware_budget_usd"]].drop_duplicates() if not panel.empty else panel
+                unique_points = (
+                    panel[
+                        ["service_budget_usd", "hardware_budget_usd"]
+                    ].drop_duplicates()
+                    if not panel.empty
+                    else panel
+                )
                 if len(panel) < 3 or len(unique_points) < 3:
-                    ax.text(0.5, 0.5, "Need at least 3 finite budget points", ha="center", va="center", transform=ax.transAxes)
+                    ax.text(
+                        0.5,
+                        0.5,
+                        "Need at least 3 finite budget points",
+                        ha="center",
+                        va="center",
+                        transform=ax.transAxes,
+                    )
                     continue
-                triangulation = mtri.Triangulation(panel["service_budget_usd"], panel["hardware_budget_usd"])
+                triangulation = mtri.Triangulation(
+                    panel["service_budget_usd"], panel["hardware_budget_usd"]
+                )
                 value_min = float(panel[metric].min())
                 value_max = float(panel[metric].max())
                 if np.isclose(value_min, value_max):
-                    fill_levels = np.array([value_min - 1e-12, value_max + 1e-12], dtype=float)
+                    fill_levels = np.array(
+                        [value_min - 1e-12, value_max + 1e-12], dtype=float
+                    )
                     line_levels = np.array([value_min], dtype=float)
                 else:
                     top = np.nextafter(value_max, np.inf)
@@ -416,7 +560,14 @@ def _plot_budget_matrix(
                         alpha=0.6,
                     )
                 except ValueError:
-                    ax.text(0.5, 0.5, "Degenerate budget grid", ha="center", va="center", transform=ax.transAxes)
+                    ax.text(
+                        0.5,
+                        0.5,
+                        "Degenerate budget grid",
+                        ha="center",
+                        va="center",
+                        transform=ax.transAxes,
+                    )
                     continue
                 ax.scatter(
                     panel["service_budget_usd"],
@@ -428,7 +579,14 @@ def _plot_budget_matrix(
                 color_artist = contour
             else:
                 if panel.empty:
-                    ax.text(0.5, 0.5, "No finite values", ha="center", va="center", transform=ax.transAxes)
+                    ax.text(
+                        0.5,
+                        0.5,
+                        "No finite values",
+                        ha="center",
+                        va="center",
+                        transform=ax.transAxes,
+                    )
                     continue
                 color_artist = ax.scatter(
                     panel["service_budget_usd"],
@@ -440,15 +598,25 @@ def _plot_budget_matrix(
                     linewidths=0.3,
                 )
 
-            _overlay_budget_exceeded_region(ax, xlim, ylim, total_budget_usd, years)
+            _overlay_budget_exceeded_region(
+                ax, xlim, ylim, total_budget_usd, years
+            )
             colorbar = fig.colorbar(color_artist, ax=ax, shrink=0.84)
             colorbar.set_label(metric)
 
     fig.tight_layout()
     if contours:
-        filename = "budget_frontier_contours_transposed.png" if transpose else "budget_frontier_contours.png"
+        filename = (
+            "budget_frontier_contours_transposed.png"
+            if transpose
+            else "budget_frontier_contours.png"
+        )
     else:
-        filename = "budget_frontier_grid_transposed.png" if transpose else "budget_frontier_grid.png"
+        filename = (
+            "budget_frontier_grid_transposed.png"
+            if transpose
+            else "budget_frontier_grid.png"
+        )
     fig.savefig(output_dir / filename, dpi=180)
     plt.close(fig)
 
@@ -501,7 +669,9 @@ def plot_budget_contours(
     )
 
 
-def _plot_frontier_timeseries(frontier_timeseries: pd.DataFrame, output_dir: Path, transpose: bool) -> None:
+def _plot_frontier_timeseries(
+    frontier_timeseries: pd.DataFrame, output_dir: Path, transpose: bool
+) -> None:
     frontier_timeseries = _prepare_frontier_timeseries(frontier_timeseries)
     metrics = _plot_panel_specs()
     if transpose:
@@ -524,7 +694,14 @@ def _plot_frontier_timeseries(frontier_timeseries: pd.DataFrame, output_dir: Pat
         ax.set_xlabel("Month")
         ax.set_ylabel(metric)
         if panel.empty:
-            ax.text(0.5, 0.5, "No finite values", ha="center", va="center", transform=ax.transAxes)
+            ax.text(
+                0.5,
+                0.5,
+                "No finite values",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+            )
             continue
 
         grouped = panel.groupby("month", sort=True)[metric]
@@ -536,14 +713,24 @@ def _plot_frontier_timeseries(frontier_timeseries: pd.DataFrame, output_dir: Pat
         p90 = grouped.quantile(0.90).reindex(month_index).to_numpy(float)
         maxs = grouped.max().reindex(month_index).to_numpy(float)
 
-        ax.fill_between(months, mins, maxs, color="#93c5fd", alpha=0.25, label="Min-Max")
-        ax.fill_between(months, p10, p90, color="#2563eb", alpha=0.28, label="P10-P90")
-        ax.plot(months, medians, color="#111827", linewidth=2.0, label="Median")
+        ax.fill_between(
+            months, mins, maxs, color="#93c5fd", alpha=0.25, label="Min-Max"
+        )
+        ax.fill_between(
+            months, p10, p90, color="#2563eb", alpha=0.28, label="P10-P90"
+        )
+        ax.plot(
+            months, medians, color="#111827", linewidth=2.0, label="Median"
+        )
         ax.scatter(months, medians, color="#111827", s=14, zorder=3)
         ax.legend(loc="best", fontsize=8)
 
     fig.tight_layout()
-    filename = "budget_frontier_timeseries_transposed.png" if transpose else "budget_frontier_timeseries.png"
+    filename = (
+        "budget_frontier_timeseries_transposed.png"
+        if transpose
+        else "budget_frontier_timeseries.png"
+    )
     fig.savefig(output_dir / filename, dpi=180)
     plt.close(fig)
 
@@ -556,35 +743,90 @@ def parse_args() -> argparse.Namespace:
         raise SystemExit(str(exc)) from exc
     defaults = SWEEP_DEFAULTS["budget_frontier"]
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=config_path, help="YAML configuration file (default: simulation_config.yaml).")
-    parser.add_argument("--replot-only", action="store_true", help="Reuse budget_frontier_selections.csv in --output-dir and regenerate plots only.")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=config_path,
+        help="YAML configuration file (default: simulation_config.yaml).",
+    )
+    parser.add_argument(
+        "--replot-only",
+        action="store_true",
+        help="Reuse budget_frontier_selections.csv in --output-dir and regenerate plots only.",
+    )
     parser.add_argument("--users", type=int, default=defaults["users"])
     parser.add_argument("--years", type=float, default=defaults["years"])
-    parser.add_argument("--resolution-months", type=int, default=defaults["resolution_months"])
+    parser.add_argument(
+        "--resolution-months", type=int, default=defaults["resolution_months"]
+    )
     parser.add_argument("--runs", type=int, default=defaults["runs"])
-    parser.add_argument("--concurrency", type=int, default=defaults["concurrency"])
-    parser.add_argument("--simulation-concurrency", type=int, default=defaults["simulation_concurrency"])
+    parser.add_argument(
+        "--concurrency", type=int, default=defaults["concurrency"]
+    )
+    parser.add_argument(
+        "--simulation-concurrency",
+        type=int,
+        default=defaults["simulation_concurrency"],
+    )
     parser.add_argument("--seed", type=int, default=defaults["seed"])
-    parser.add_argument("--plateau-quarter", type=int, default=defaults["plateau_quarter"])
+    parser.add_argument(
+        "--plateau-quarter", type=int, default=defaults["plateau_quarter"]
+    )
     parser.add_argument("--employee-mix", type=str, default=None)
     parser.add_argument(
         "--engineering-context",
         choices=["bounded", "maintenance", "mixed"],
         default=SIMULATION_DEFAULTS["engineering_context"],
     )
-    parser.add_argument("--backend", choices=["numpy", "numba", "torch-mps", "auto"], default="auto")
+    parser.add_argument(
+        "--backend",
+        choices=["numpy", "numba", "torch-mps", "auto"],
+        default="auto",
+    )
     parser.add_argument("--total-budget-usd", type=float, default=None)
-    parser.add_argument("--service-budget-min-usd", type=float, default=defaults["service_budget_min_usd"])
+    parser.add_argument(
+        "--service-budget-min-usd",
+        type=float,
+        default=defaults["service_budget_min_usd"],
+    )
     parser.add_argument("--service-budget-max-usd", type=float, default=None)
-    parser.add_argument("--service-budget-points", type=int, default=defaults["service_budget_points"])
-    parser.add_argument("--hardware-budget-min-usd", type=float, default=defaults["hardware_budget_min_usd"])
+    parser.add_argument(
+        "--service-budget-points",
+        type=int,
+        default=defaults["service_budget_points"],
+    )
+    parser.add_argument(
+        "--hardware-budget-min-usd",
+        type=float,
+        default=defaults["hardware_budget_min_usd"],
+    )
     parser.add_argument("--hardware-budget-max-usd", type=float, default=None)
-    parser.add_argument("--hardware-budget-points", type=int, default=defaults["hardware_budget_points"])
-    parser.add_argument("--confidential-document-fraction", type=float, default=SIMULATION_DEFAULTS["confidential_document_fraction"])
-    parser.add_argument("--usd-per-service-cost-index-quarter", type=float, default=SIMULATION_DEFAULTS["usd_per_service_cost_index_quarter"])
-    parser.add_argument("--usd-per-hardware-capex-index", type=float, default=None)
-    parser.add_argument("--hardware-calibration", choices=sorted(HARDWARE_CALIBRATIONS), default=SIMULATION_DEFAULTS["hardware_calibration"])
-    parser.add_argument("--output-dir", type=Path, default=Path("budget_sweep_outputs"))
+    parser.add_argument(
+        "--hardware-budget-points",
+        type=int,
+        default=defaults["hardware_budget_points"],
+    )
+    parser.add_argument(
+        "--confidential-document-fraction",
+        type=float,
+        default=SIMULATION_DEFAULTS["confidential_document_fraction"],
+    )
+    parser.add_argument(
+        "--usd-per-service-cost-index-quarter",
+        type=float,
+        default=SIMULATION_DEFAULTS["usd_per_service_cost_index_quarter"],
+    )
+    parser.add_argument(
+        "--usd-per-hardware-capex-index", type=float, default=None
+    )
+    parser.add_argument(
+        "--hardware-calibration",
+        choices=sorted(HARDWARE_CALIBRATIONS),
+        default=SIMULATION_DEFAULTS["hardware_calibration"],
+    )
+    parser.add_argument(
+        "--output-dir", type=Path, default=Path("budget_sweep_outputs")
+    )
     return parser.parse_args()
 
 
@@ -600,9 +842,15 @@ def main() -> None:
         except FileNotFoundError:
             frontier_timeseries = None
         if frontier_timeseries is not None:
-            _plot_frontier_timeseries(frontier_timeseries, args.output_dir, transpose=False)
-            _plot_frontier_timeseries(frontier_timeseries, args.output_dir, transpose=True)
-        print(f"Replotted outputs from {args.output_dir / 'budget_frontier_selections.csv'}")
+            _plot_frontier_timeseries(
+                frontier_timeseries, args.output_dir, transpose=False
+            )
+            _plot_frontier_timeseries(
+                frontier_timeseries, args.output_dir, transpose=True
+            )
+        print(
+            f"Replotted outputs from {args.output_dir / 'budget_frontier_selections.csv'}"
+        )
         print(f"Wrote plots to {args.output_dir}")
         return
 
@@ -616,9 +864,13 @@ def main() -> None:
         if value is None
     ]
     if missing_budget_args:
-        raise SystemExit(f"Missing required arguments unless --replot-only is set: {', '.join(missing_budget_args)}")
+        raise SystemExit(
+            f"Missing required arguments unless --replot-only is set: {', '.join(missing_budget_args)}"
+        )
     if not 0.0 <= args.confidential_document_fraction <= 1.0:
-        raise SystemExit("--confidential-document-fraction must be between 0 and 1.")
+        raise SystemExit(
+            "--confidential-document-fraction must be between 0 and 1."
+        )
 
     backend = _resolve_backend(args.backend)
     employee_mix = parse_employee_mix(args.employee_mix)
@@ -627,7 +879,8 @@ def main() -> None:
     hardware_index_usd = (
         args.usd_per_hardware_capex_index
         if args.usd_per_hardware_capex_index is not None
-        else float(calibration["target_unit_usd"]) / HARDWARE_SCENARIOS["onprem_10pct_capacity"]["capex_units"]
+        else float(calibration["target_unit_usd"])
+        / HARDWARE_SCENARIOS["onprem_10pct_capacity"]["capex_units"]
     )
     base_config = SimulationConfig(
         users=args.users,
@@ -641,7 +894,9 @@ def main() -> None:
         usd_per_service_cost_index_quarter=args.usd_per_service_cost_index_quarter,
         usd_per_hardware_capex_index=hardware_index_usd,
         hardware_calibration=args.hardware_calibration,
-        onprem_capability_multiplier=float(calibration["onprem_capability_multiplier"]),
+        onprem_capability_multiplier=float(
+            calibration["onprem_capability_multiplier"]
+        ),
         employee_mix=employee_mix,
         engineering_context=args.engineering_context,
         backend=backend,
@@ -651,19 +906,36 @@ def main() -> None:
 
     pairs = budget_pairs(args)
     if not pairs:
-        raise SystemExit("No budget pairs fit within the total budget constraint.")
+        raise SystemExit(
+            "No budget pairs fit within the total budget constraint."
+        )
 
     selections: list[pd.DataFrame] = []
     frontier_frames: list[pd.DataFrame] = []
     frontier_timeseries_frames: list[pd.DataFrame] = []
 
-    executor_cls = ThreadPoolExecutor if backend == "torch-mps" else ProcessPoolExecutor
-    with executor_cls(max_workers=min(args.concurrency, len(pairs))) as executor:
+    executor_cls = (
+        ThreadPoolExecutor if backend == "torch-mps" else ProcessPoolExecutor
+    )
+    with executor_cls(
+        max_workers=min(args.concurrency, len(pairs))
+    ) as executor:
         futures = {
-            executor.submit(evaluate_budget_pair, service_budget, hardware_budget, base_config, index): (service_budget, hardware_budget)
+            executor.submit(
+                evaluate_budget_pair,
+                service_budget,
+                hardware_budget,
+                base_config,
+                index,
+            ): (service_budget, hardware_budget)
             for index, (service_budget, hardware_budget) in enumerate(pairs)
         }
-        for future in tqdm(as_completed(futures), total=len(futures), desc="Sweeping budgets", unit="budget-pair"):
+        for future in tqdm(
+            as_completed(futures),
+            total=len(futures),
+            desc="Sweeping budgets",
+            unit="budget-pair",
+        ):
             selection_rows, frontier, frontier_timeseries = future.result()
             selections.append(selection_rows)
             frontier_frames.append(frontier)
@@ -671,15 +943,37 @@ def main() -> None:
 
     selection_summary = pd.concat(selections, ignore_index=True)
     frontier_points = pd.concat(frontier_frames, ignore_index=True)
-    frontier_timeseries = pd.concat(frontier_timeseries_frames, ignore_index=True)
+    frontier_timeseries = pd.concat(
+        frontier_timeseries_frames, ignore_index=True
+    )
 
-    selection_summary.to_csv(args.output_dir / "budget_frontier_selections.csv", index=False)
-    frontier_points.to_csv(args.output_dir / "budget_frontier_points.csv", index=False)
-    frontier_timeseries.to_csv(args.output_dir / "budget_frontier_timeseries.csv", index=False)
-    plot_budget_grid(selection_summary, args.output_dir, total_budget_usd=args.total_budget_usd, years=args.years)
-    plot_budget_contours(selection_summary, args.output_dir, total_budget_usd=args.total_budget_usd, years=args.years)
-    _plot_frontier_timeseries(frontier_timeseries, args.output_dir, transpose=False)
-    _plot_frontier_timeseries(frontier_timeseries, args.output_dir, transpose=True)
+    selection_summary.to_csv(
+        args.output_dir / "budget_frontier_selections.csv", index=False
+    )
+    frontier_points.to_csv(
+        args.output_dir / "budget_frontier_points.csv", index=False
+    )
+    frontier_timeseries.to_csv(
+        args.output_dir / "budget_frontier_timeseries.csv", index=False
+    )
+    plot_budget_grid(
+        selection_summary,
+        args.output_dir,
+        total_budget_usd=args.total_budget_usd,
+        years=args.years,
+    )
+    plot_budget_contours(
+        selection_summary,
+        args.output_dir,
+        total_budget_usd=args.total_budget_usd,
+        years=args.years,
+    )
+    _plot_frontier_timeseries(
+        frontier_timeseries, args.output_dir, transpose=False
+    )
+    _plot_frontier_timeseries(
+        frontier_timeseries, args.output_dir, transpose=True
+    )
 
     print(f"Wrote outputs to {args.output_dir}")
     print(selection_summary.head(6).to_string(index=False))

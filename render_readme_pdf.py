@@ -10,7 +10,6 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-
 CHROME_CANDIDATES = [
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Google Chrome.app/Contents/MacOS/Google\\ Chrome",
@@ -41,7 +40,9 @@ def markdown_to_html(markdown_text: str) -> str:
     def flush_list() -> None:
         nonlocal list_items
         if list_items:
-            items = "".join(f"<li>{inline_markup(item)}</li>" for item in list_items)
+            items = "".join(
+                f"<li>{inline_markup(item)}</li>" for item in list_items
+            )
             parts.append(f"<ul>{items}</ul>")
             list_items = []
 
@@ -61,8 +62,12 @@ def markdown_to_html(markdown_text: str) -> str:
         if in_code:
             if line.strip() == "```":
                 code_html = html.escape("\n".join(code_lines))
-                class_attr = f' class="language-{code_lang}"' if code_lang else ""
-                parts.append(f"<pre><code{class_attr}>{code_html}</code></pre>")
+                class_attr = (
+                    f' class="language-{code_lang}"' if code_lang else ""
+                )
+                parts.append(
+                    f"<pre><code{class_attr}>{code_html}</code></pre>"
+                )
                 code_lines = []
                 code_lang = ""
                 in_code = False
@@ -95,7 +100,9 @@ def markdown_to_html(markdown_text: str) -> str:
             flush_paragraph()
             flush_list()
             level = len(heading_match.group(1))
-            parts.append(f"<h{level}>{inline_markup(heading_match.group(2).strip())}</h{level}>")
+            parts.append(
+                f"<h{level}>{inline_markup(heading_match.group(2).strip())}</h{level}>"
+            )
             continue
 
         bullet_match = re.match(r"^-\s+(.*)$", line)
@@ -127,7 +134,9 @@ def inline_markup(text: str) -> str:
     return escaped
 
 
-def build_html_document(title: str, body_html: str, landscape: bool, diagram_scale: float) -> str:
+def build_html_document(
+    title: str, body_html: str, landscape: bool, diagram_scale: float
+) -> str:
     page_size = "A4 landscape" if landscape else "A4"
     return f"""<!doctype html>
 <html lang="en">
@@ -267,7 +276,9 @@ def render_pdf(
 ) -> None:
     markdown_text = readme_path.read_text(encoding="utf-8")
     body_html = markdown_to_html(markdown_text)
-    html_text = build_html_document(readme_path.stem, body_html, landscape, diagram_scale)
+    html_text = build_html_document(
+        readme_path.stem, body_html, landscape, diagram_scale
+    )
 
     if html_out is None:
         html_file = output_pdf.with_suffix(".html")
@@ -299,7 +310,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=Path("README.pdf"))
     parser.add_argument("--html-out", type=Path, default=None)
     parser.add_argument("--chrome-binary", type=str, default=None)
-    parser.add_argument("--landscape", action="store_true", help="Render the PDF in landscape mode.")
+    parser.add_argument(
+        "--landscape",
+        action="store_true",
+        help="Render the PDF in landscape mode.",
+    )
     parser.add_argument(
         "--diagram-scale",
         type=float,
@@ -312,7 +327,14 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     chrome_binary = args.chrome_binary or find_chrome()
-    render_pdf(args.readme, args.output, chrome_binary, args.html_out, args.landscape, args.diagram_scale)
+    render_pdf(
+        args.readme,
+        args.output,
+        chrome_binary,
+        args.html_out,
+        args.landscape,
+        args.diagram_scale,
+    )
     print(f"Wrote PDF to {args.output}")
 
 
