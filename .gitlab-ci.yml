@@ -1,0 +1,13 @@
+stages:
+  - lint
+
+lint:
+  stage: lint
+  image: python:3.12-slim
+  before_script:
+    - python -m pip install -r requirements.txt -r requirements-dev.txt
+  script:
+    - git ls-files -z '*.py' | xargs -0 -n 1 black
+    - git ls-files -z '*.py' | xargs -0 isort
+    - git diff --exit-code -- '*.py'
+    - pytest -q

@@ -39,8 +39,9 @@ git diff --exit-code -- '*.py'
 ```
 
 Run the regression tests with `pytest -q`. GitHub Actions and GitLab CI run
-the same formatting check on every pushed change. See [`AGENTS.md`](AGENTS.md)
-for the repository layout, contribution conventions, and Slurm operations.
+the formatting check and unit tests on every pushed change. See
+[`AGENTS.md`](AGENTS.md) for the repository layout, contribution conventions,
+and Slurm operations.
 
 ## Run
 
