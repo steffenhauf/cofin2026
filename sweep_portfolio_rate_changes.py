@@ -66,7 +66,7 @@ COMPANY_PROFILES = {
     },
     "mixed": {
         "software_engineering": 0.25,
-        "administration": 0.35,
+        "administration": 0.25,
         "manual_labor": 0.20,
         "knowledge_work": 0.20,
         "creative_work": 0.10,

@@ -152,7 +152,7 @@ sweeps:
     confidential_shares: [0.0,0.1,0.25,0.5,0.9] # fraction [0,1]; data/sensitivity grid.
     company_profiles: # Employee-share fractions; illustrative compositions, each must sum to 1.
       administration_heavy: {software_engineering: 0.05, administration: 0.70, manual_labor: 0.10, knowledge_work: 0.15, creative_work: 0.0} # fractions; organizational data preferred.
-      mixed: {software_engineering: 0.25, administration: 0.35, manual_labor: 0.20, knowledge_work: 0.20, creative_work: 0.10} # fractions; original baseline; normalize before use with organization data.
+      mixed: {software_engineering: 0.25, administration: 0.25, manual_labor: 0.20, knowledge_work: 0.20, creative_work: 0.10} # fractions; illustrative mixed profile; replace with organization data.
       manual_labor_heavy: {software_engineering: 0.05, administration: 0.15, manual_labor: 0.70, knowledge_work: 0.10, creative_work: 0.0} # fractions; organizational data preferred.
       software_engineering_heavy: {software_engineering: 0.75, administration: 0.10, manual_labor: 0.05, knowledge_work: 0.10, creative_work: 0.0} # fractions; organizational data preferred.
       knowledge_worker_heavy: {software_engineering: 0.10, administration: 0.20, manual_labor: 0.05, knowledge_work: 0.65, creative_work: 0.0} # fractions; organizational data preferred.

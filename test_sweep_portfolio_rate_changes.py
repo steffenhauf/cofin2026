@@ -53,9 +53,9 @@ def test_oss_capability_matches_frontier_one_year_earlier():
 
 
 def test_rtx_pro_tier_scales_to_public_seed_concurrency():
-    users = pd.DataFrame({"wait_tolerance": [0.5] * 25})
+    users = pd.DataFrame({"wait_tolerance": [0.5] * 50})
     config = SimulationConfig(
-        users=25,
+        users=50,
         max_upfront_hardware_budget_usd=14_500.0,
         usd_per_hardware_capex_index=14500.0 / 165.0,
         hardware_calibration="rtx6000-pro-gemma4-26b-moe",
@@ -146,13 +146,16 @@ def test_stochastic_shock_combinations_cover_all_subsets():
 def test_monthly_shock_probability_is_resolution_invariant():
     monthly = 0.1
     quarterly = _period_probability(monthly, 3)
-    assert abs(1.0 - (1.0 - quarterly) ** 4 - (1.0 - monthly) ** 12) < 1e-12
+    annual_from_quarters = 1.0 - (1.0 - quarterly) ** 4
+    annual_from_months = 1.0 - (1.0 - monthly) ** 12
+    assert abs(annual_from_quarters - annual_from_months) < 1e-12
 
 
 def test_stochastic_token_costs_are_persistent_and_ramp_after_occurrence():
     assert _stochastic_token_cost(2, 12, False, None) == 1.0
     assert _stochastic_token_cost(2, 12, True, None) == 1.85
-    assert _stochastic_token_cost(3, 12, False, 2) == 1.0
+    assert _stochastic_token_cost(2, 12, False, 2) == 1.0
+    assert 1.0 < _stochastic_token_cost(3, 12, False, 2) < 1.85
     assert _stochastic_token_cost(11, 12, False, 2) == 1.85
 
 
